@@ -1,7 +1,7 @@
 // sw.js — The Standing Table service worker
 // Strategy: network-first for the app itself (so updates arrive immediately),
 // cache-first for CDN assets (React, fonts) so the app opens offline.
-const CACHE = 'standing-table-v1';
+const CACHE = 'standing-table-v2';
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
