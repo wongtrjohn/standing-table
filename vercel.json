@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/g/:handle", "destination": "/index.html" }
+  ]
+}
