@@ -257,6 +257,20 @@ window.computeOverall = function (scores, weights) {
            + scores.vibe * (w.vibe || 0) + scores.service * (w.service || 0)) / tot;
   return Math.round(v * 10) / 10;
 };
+// Scale four independent axis weights so they sum to exactly 100, preserving
+// their relative proportions. Lets users dial each axis on its own, then
+// normalise in one tap. Falls back to an even 25/25/25/25 split if all zero.
+window.evenWeights = function (w) {
+  const keys = ['food', 'value', 'vibe', 'service'];
+  const tot = keys.reduce((s, k) => s + ((w && w[k]) || 0), 0);
+  if (!tot) return { food: 25, value: 25, vibe: 25, service: 25 };
+  const out = {}; let acc = 0;
+  keys.forEach((k, i) => {
+    if (i < keys.length - 1) { out[k] = Math.round(((w[k] || 0) / tot) * 100); acc += out[k]; }
+  });
+  out[keys[keys.length - 1]] = Math.max(0, 100 - acc);
+  return out;
+};
 window.STATUS_META = STATUS_META;
 window.HOOD_XY = HOOD_XY;
 window.fmt = fmt;
@@ -777,6 +791,59 @@ function AppCard({ p, onTap, selecting, selected }) {
   );
 }
 
+// ── filter pill (overview) ─────────────────────────────────────────────────
+// A compact tappable pill that opens a small dropdown menu. Used for the
+// Cuisine / Location / Price / Verdict filters on the overview screen.
+function FilterMenuItem({ selected, onClick, children }) {
+  return (
+    <button onClick={onClick} className="sans" style={{
+      display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+      background: selected ? 'var(--paper-2)' : 'transparent', border: 'none', borderRadius: 8,
+      padding: '8px 10px', cursor: 'pointer', textAlign: 'left', fontSize: 13, color: 'var(--ink)',
+    }}>
+      <span>{children}</span>
+      {selected && <span style={{ color: 'var(--spot)', fontSize: 12 }}>✓</span>}
+    </button>
+  );
+}
+
+function FilterPill({ label, value, options, onChange, formatValue }) {
+  const [open, setOpen] = React.useState(false);
+  const active = value != null;
+  const shown = active ? (formatValue ? formatValue(value) : value) : label;
+  return (
+    <div style={{ position: 'relative', flexShrink: 0 }}>
+      <button onClick={() => setOpen(o => !o)} className="kl" aria-label={'Filter by ' + label} style={{
+        display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 11px',
+        borderRadius: 999, cursor: 'pointer', whiteSpace: 'nowrap', fontSize: 10.5,
+        border: '1px solid ' + (active ? 'var(--ink)' : 'var(--line)'),
+        background: active ? 'var(--ink)' : 'transparent',
+        color: active ? 'var(--paper)' : 'var(--ink-2)',
+      }}>
+        <span>{shown}</span>
+        <span style={{ fontSize: 8, opacity: 0.75 }}>▾</span>
+      </button>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }} />
+          <div className="sans" style={{
+            position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 41,
+            background: 'var(--paper)', border: '1px solid var(--line)', borderRadius: 12,
+            boxShadow: '0 8px 28px rgba(28,24,21,0.16)', padding: 6, minWidth: 156,
+            maxHeight: 256, overflowY: 'auto',
+          }}>
+            <FilterMenuItem selected={value == null} onClick={() => { onChange(null); setOpen(false); }}>All {label.toLowerCase()}</FilterMenuItem>
+            {options.map(opt => (
+              <FilterMenuItem key={String(opt.val)} selected={value === opt.val} onClick={() => { onChange(opt.val); setOpen(false); }}>{opt.label}</FilterMenuItem>
+            ))}
+            {!options.length && <div className="sans" style={{ padding: '8px 10px', fontSize: 12.5, color: 'var(--ink-3)' }}>None yet</div>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── pipeline ──────────────────────────────────────────────────────────────
 const APP_LANES = [
   { key: 'want', label: 'Want to try', accent: 'var(--ink-3)' },
@@ -790,6 +857,13 @@ function AppPipeline({ places, onOpenPlace, onLog, onSettings, switcher, title, 
   const [sel, setSel] = React.useState(() => new Set());
   const [confirmDel, setConfirmDel] = React.useState(false);
   const [q, setQ] = React.useState('');
+  // overview filters — each null = "all". Verdict: 'again' | 'pass'.
+  const [fCuisine, setFCuisine] = React.useState(null);
+  const [fLoc, setFLoc] = React.useState(null);
+  const [fPrice, setFPrice] = React.useState(null);
+  const [fVerdict, setFVerdict] = React.useState(null);
+  const anyFilter = fCuisine != null || fLoc != null || fPrice != null || fVerdict != null;
+  const clearFilters = () => { setFCuisine(null); setFLoc(null); setFPrice(null); setFVerdict(null); };
   const toggleSel = (id) => setSel(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const exitSelect = () => { setSelecting(false); setSel(new Set()); setConfirmDel(false); };
   const [active, setActive] = React.useState(() => {
@@ -798,8 +872,26 @@ function AppPipeline({ places, onOpenPlace, onLog, onSettings, switcher, title, 
     if (counts[1]) return 'visited';
     return 'want';
   });
+  // dropdown options, derived from the actual collection so menus only show real values
+  const uniqSorted = (vals) => [...new Set(vals.filter(v => v != null && v !== ''))];
+  const cuisineOpts = uniqSorted(places.map(p => p.cuisine)).sort().map(c => ({ val: c, label: c }));
+  const locOpts = uniqSorted(places.map(p => p.hood)).sort().map(h => ({ val: h, label: h }));
+  const priceOpts = uniqSorted(places.map(p => p.price)).sort((a, b) => a - b).map(v => ({ val: v, label: '$'.repeat(v) }));
+  const verdictOpts = [{ val: 'again', label: 'Go again' }, { val: 'pass', label: 'Pass' }];
+  const priceText = (v) => '$'.repeat(v);
+  const verdictText = (v) => (v === 'again' ? 'Go again' : 'Pass');
+  // a place passes the active facet filters (cuisine / location / price / verdict)
+  const passesFilters = (p) => {
+    if (fCuisine != null && p.cuisine !== fCuisine) return false;
+    if (fLoc != null && p.hood !== fLoc) return false;
+    if (fPrice != null && p.price !== fPrice) return false;
+    if (fVerdict === 'again' && p.again !== true) return false;
+    if (fVerdict === 'pass' && p.again !== false) return false;
+    return true;
+  };
+  const laneCount = (k) => places.filter(p => p.status === k && passesFilters(p)).length;
   const byStatus = (k) => {
-    const arr = places.filter(p => p.status === k);
+    const arr = places.filter(p => p.status === k && passesFilters(p));
     if (k === 'reviewed') return arr.slice().sort((a, b) => (b.overall || 0) - (a.overall || 0));
     return arr;
   };
@@ -865,7 +957,7 @@ function AppPipeline({ places, onOpenPlace, onLog, onSettings, switcher, title, 
               padding: '7px 4px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
             }}>
               <span className="kl" style={{ color: on ? 'var(--paper)' : 'var(--ink-2)', fontSize: 9 }}>{l.key}</span>
-              <span className="num" style={{ fontSize: 13, fontWeight: 600, color: on ? 'var(--paper)' : 'var(--ink)' }}>{places.filter(p => p.status === l.key).length}</span>
+              <span className="num" style={{ fontSize: 13, fontWeight: 600, color: on ? 'var(--paper)' : 'var(--ink)' }}>{laneCount(l.key)}</span>
             </button>
           );
         })}
@@ -886,6 +978,19 @@ function AppPipeline({ places, onOpenPlace, onLog, onSettings, switcher, title, 
         </div>
       </div>
 
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '0 20px 12px', flexShrink: 0, alignItems: 'center' }}>
+        <FilterPill label="Cuisine" value={fCuisine} options={cuisineOpts} onChange={setFCuisine} />
+        <FilterPill label="Location" value={fLoc} options={locOpts} onChange={setFLoc} />
+        <FilterPill label="Price" value={fPrice} options={priceOpts} onChange={setFPrice} formatValue={priceText} />
+        <FilterPill label="Verdict" value={fVerdict} options={verdictOpts} onChange={setFVerdict} formatValue={verdictText} />
+        {anyFilter && (
+          <button onClick={clearFilters} className="kl" style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4, padding: '6px 10px', borderRadius: 999,
+            border: 'none', background: 'none', cursor: 'pointer', color: 'var(--spot)', fontSize: 10.5, flexShrink: 0,
+          }}>Clear ×</button>
+        )}
+      </div>
+
       <div style={{ padding: '0 20px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
         <window.KLabel style={{ color: lane.accent }}>{lane.label}</window.KLabel>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -900,9 +1005,15 @@ function AppPipeline({ places, onOpenPlace, onLog, onSettings, switcher, title, 
         {!list.length && (
           <div style={{ textAlign: 'center', padding: '48px 24px' }}>
             <div className="serif" style={{ fontSize: 17, fontStyle: 'italic', color: 'var(--ink-3)' }}>
-              {ql ? 'No places match “' + q.trim() + '”.' : (active === 'want' ? 'Nothing on the wishlist yet.' : active === 'visited' ? 'No visits waiting for a review.' : 'No reviews yet.')}
+              {ql ? 'No places match “' + q.trim() + '”.' : (anyFilter ? 'No places match these filters.' : (active === 'want' ? 'Nothing on the wishlist yet.' : active === 'visited' ? 'No visits waiting for a review.' : 'No reviews yet.'))}
             </div>
-            {!hideLog && !ql && (
+            {anyFilter && !ql && (
+            <button onClick={clearFilters} className="kl" style={{
+              marginTop: 14, background: 'none', border: '1px solid var(--line)', borderRadius: 999,
+              padding: '9px 16px', cursor: 'pointer', color: 'var(--ink-2)',
+            }}>Clear filters</button>
+            )}
+            {!hideLog && !ql && !anyFilter && (
             <button onClick={onLog} className="kl" style={{
               marginTop: 14, background: 'none', border: '1px solid var(--line)', borderRadius: 999,
               padding: '9px 16px', cursor: 'pointer', color: 'var(--ink-2)',
@@ -1346,6 +1457,7 @@ function AppForm({ place, forceStatus, prefill, onSave, onCancel }) {
   const scores = d.s || { food: 8, value: 7, vibe: 8, service: 7 };
   const effWeights = d.weights || window.AXIS_WEIGHTS;
   const effTot = (effWeights.food||0)+(effWeights.value||0)+(effWeights.vibe||0)+(effWeights.service||0) || 1;
+  const wTot = d.weights ? (d.weights.food||0)+(d.weights.value||0)+(d.weights.vibe||0)+(d.weights.service||0) : 0;
   const overall = window.calcWeighted(scores, effWeights);
 
   React.useEffect(() => {
@@ -1498,14 +1610,21 @@ function AppForm({ place, forceStatus, prefill, onSave, onCancel }) {
                     <window.KLabel>Weighting · this place</window.KLabel>
                     <button type="button" onClick={() => set({ weights: null })} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--spot)', padding: 0 }}>Reset to default</button>
                   </div>
+                  <p className="sans" style={{ fontSize: 11.5, color: 'var(--ink-3)', lineHeight: 1.5, margin: '0 0 9px' }}>Set each axis on its own — the others stay put. Aim for 100% total, or tap “Even out” and we'll balance them for you.</p>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
                     {window.AXIS_ORDER.map(k => (
                       <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <span className="sans" style={{ fontSize: 13, color: 'var(--ink)', width: 64 }}>{window.fmt.axis(k)}</span>
                         <input type="range" min="0" max="100" step="5" value={d.weights[k]} onChange={e => set({ weights: { ...d.weights, [k]: Number(e.target.value) } })} style={{ flex: 1 }} />
-                        <span className="num" style={{ fontSize: 12, color: 'var(--ink-2)', width: 46, textAlign: 'right' }}>{Math.round((d.weights[k] / effTot) * 100)}%</span>
+                        <span className="num" style={{ fontSize: 12, color: 'var(--ink-2)', width: 46, textAlign: 'right' }}>{d.weights[k]}%</span>
                       </div>
                     ))}
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+                    <span className="num" style={{ fontSize: 12, color: wTot === 100 ? 'var(--ink-3)' : 'var(--spot-2)' }}>Total {wTot}%{wTot === 100 ? ' ✓' : ''}</span>
+                    {wTot !== 100 && (
+                      <button type="button" onClick={() => set({ weights: window.evenWeights(d.weights) })} className="kl" style={{ background: 'var(--spot-soft)', color: 'var(--spot-2)', border: 'none', borderRadius: 999, padding: '6px 12px', cursor: 'pointer' }}>Even out to 100%</button>
+                    )}
                   </div>
                 </div>
               )}
@@ -1718,6 +1837,22 @@ function useCloudCollection(user) {
     setPlaces(prev => [...p.places, ...(prev || [])]);
   };
 
+  // Like addPlace, but resolves only after the row is committed to the server.
+  // Used when the new place is referenced right away (e.g. copying shared-list
+  // places into the journal and into a list, which has a foreign key on places).
+  const addPlaceAwait = async (data) => {
+    const id = crypto.randomUUID();
+    const local = { id, createdAt: new Date().toISOString(), ...data };
+    setPlaces(prev => [local, ...(prev || [])]);
+    const photos = await cloudUploadPhotos(user.id, data.photos);
+    const row = placeToRow({ ...data, photos }, user.id);
+    row.id = id;
+    const { error } = await sb.from('places').insert(row);
+    if (error) { fail('Could not save to your account', error); throw error; }
+    setPlaces(prev => prev.map(p => p.id === id ? { ...p, photos } : p));
+    return id;
+  };
+
   // Import ADDS places to the account (it never wipes anything)
   const importPlaces = async (arr) => {
     const rows = [];
@@ -1731,7 +1866,7 @@ function useCloudCollection(user) {
     return rows.length;
   };
 
-  return { places, saveError, addPlace, updatePlace, deletePlace, deletePlaces, undo, undoDelete, importPlaces, refetch };
+  return { places, saveError, addPlace, addPlaceAwait, updatePlace, deletePlace, deletePlaces, undo, undoDelete, importPlaces, refetch };
 }
 
 Object.assign(window, { sb, useCloudCollection, cloudSamplePlaces, cloudUploadPhotos, cloudRowToPlace: rowToPlace });
@@ -1844,7 +1979,7 @@ function CloudSignIn() {
 
       {inviteCode && (
         <div className="sans" style={{ marginTop: 14, padding: '9px 14px', borderRadius: 999, background: 'var(--spot-soft)', color: 'var(--spot-2)', fontSize: 13 }}>
-          You've been invited to a shared table — sign in and you'll join it automatically.
+          You've been invited to a shared list — sign in and you'll join it automatically.
         </div>
       )}
 
@@ -2021,6 +2156,7 @@ function GlobalWeightsCard({ profile, onSaveProfile }) {
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState(null);
   const tot = (w.food || 0) + (w.value || 0) + (w.vibe || 0) + (w.service || 0) || 1;
+  const wsum = (w.food || 0) + (w.value || 0) + (w.vibe || 0) + (w.service || 0);
   const card = { background: 'var(--card)', border: '1px solid var(--line)', borderRadius: 12, padding: '14px 15px', display: 'flex', flexDirection: 'column', gap: 12 };
   const save = async () => {
     setBusy(true); setMsg(null);
@@ -2033,7 +2169,7 @@ function GlobalWeightsCard({ profile, onSaveProfile }) {
       <div>
         <span className="kl" style={{ color: 'var(--spot)' }}>Rating weights</span>
         <p className="sans" style={{ fontSize: 12.5, color: 'var(--ink-3)', lineHeight: 1.55, margin: '4px 0 0', textWrap: 'pretty' }}>
-          How much each axis counts toward a place's overall score. Applies to all your reviews; you can still override it per place.
+          How much each axis counts toward a place's overall score. Applies to all your reviews; you can still override it per place. Set each one on its own — the others stay put.
         </p>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -2041,9 +2177,15 @@ function GlobalWeightsCard({ profile, onSaveProfile }) {
           <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="sans" style={{ fontSize: 13, color: 'var(--ink)', width: 64 }}>{window.fmt.axis(k)}</span>
             <input type="range" min="0" max="100" step="5" value={w[k]} onChange={e => setW({ ...w, [k]: Number(e.target.value) })} style={{ flex: 1 }} />
-            <span className="num" style={{ fontSize: 12, color: 'var(--ink-2)', width: 42, textAlign: 'right' }}>{Math.round((w[k] / tot) * 100)}%</span>
+            <span className="num" style={{ fontSize: 12, color: 'var(--ink-2)', width: 42, textAlign: 'right' }}>{w[k]}%</span>
           </div>
         ))}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span className="num" style={{ fontSize: 12, color: wsum === 100 ? 'var(--ink-3)' : 'var(--spot-2)' }}>Total {wsum}%{wsum === 100 ? ' ✓' : ''}</span>
+        {wsum !== 100 && (
+          <button type="button" onClick={() => setW(window.evenWeights(w))} className="kl" style={{ background: 'var(--spot-soft)', color: 'var(--spot-2)', border: 'none', borderRadius: 999, padding: '6px 12px', cursor: 'pointer' }}>Even out to 100%</button>
+        )}
       </div>
       <button disabled={busy} onClick={save} className="kl" style={{ background: 'var(--ink)', color: 'var(--paper)', border: 'none', borderRadius: 10, padding: '10px 0', cursor: 'pointer', opacity: busy ? 0.6 : 1 }}>Save weights</button>
       {msg && <span className="sans" style={{ fontSize: 12.5, color: 'var(--spot-2)' }}>{msg}</span>}
@@ -2160,7 +2302,7 @@ function AppSettingsCloud({ places, userEmail, profile, onSaveProfile, onClose, 
             setBusy(false);
           }} style={{ ...row, opacity: busy ? 0.6 : 1 }}>
             <span className="kl" style={{ color: 'var(--ink)' }}>Restore missing photos</span>
-            <span className="sans" style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Re-fetches a Google photo for every place — in your journal and your shared tables — whose picture is missing or broken. Uses each place's saved name and address.</span>
+            <span className="sans" style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Re-fetches a Google photo for every place — in your journal and your shared lists — whose picture is missing or broken. Uses each place's saved name and address.</span>
           </button>
         )}
 
@@ -2628,7 +2770,7 @@ Object.assign(window, { LiveSearch, parseCSV, csvRowsToPlaces });
 </script>
 <script type="text/babel">
 // ── inlined from phase6-src/store-social.jsx ──
-// store-social.jsx — profiles, public guides, shared tables (Phase 6).
+// store-social.jsx — profiles, public guides, shared lists (Phase 6).
 // Loads after store-cloud.jsx. Exports: window.socialApi, window.useSharedTable
 
 const social = {
@@ -2833,7 +2975,7 @@ const social = {
       const overall = n ? Math.round(rv.reduce((a, r) => a + Number(r.overall), 0) / n * 10) / 10 : null;
       const yes = rv.filter(r => r.again === true).length, no = rv.filter(r => r.again === false).length;
       return {
-        id: sp.id, kind: 'shared', tableId: sp.table_id, tableName: tName[sp.table_id] || 'Table',
+        id: sp.id, kind: 'shared', tableId: sp.table_id, tableName: tName[sp.table_id] || 'List',
         name: sp.name, cuisine: sp.cuisine || 'Italian', hood: sp.hood || '', price: sp.price || 2,
         lat: Number(sp.lat), lng: Number(sp.lng), photos: sp.photos || [],
         overall, again: n ? (yes > no ? true : (no > yes ? false : null)) : null,
@@ -2933,7 +3075,7 @@ function useSharedTable(tableId, user) {
         places,
       });
     } catch (e) {
-      setErr((e && e.message) || 'Could not load this table.');
+      setErr((e && e.message) || 'Could not load this list.');
     }
   }, [tableId]);
 
@@ -3143,7 +3285,7 @@ function TableChips({ tables, active, onPick, onNew }) {
       {tables.map(t => (
         <button key={t.id} onClick={() => onPick(t.id)} className="kl" style={chip(active === t.id)}>{t.name}</button>
       ))}
-      <button onClick={onNew} className="kl" style={{ ...chip(false), color: 'var(--spot-2)', borderStyle: 'dashed' }}>+ Table</button>
+      <button onClick={onNew} className="kl" style={{ ...chip(false), color: 'var(--spot-2)', borderStyle: 'dashed' }}>+ List</button>
     </div>
   );
 }
@@ -3196,22 +3338,22 @@ function TablesSheet({ tables, onCreate, onJoin, onLeave, onClose }) {
     <div className="fl sans" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--paper)' }}>
       <div style={{ padding: '14px 20px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
         <button onClick={onClose} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', padding: '6px 0' }}>Cancel</button>
-        <window.KLabel>Shared Tables</window.KLabel>
+        <window.KLabel>Shared Lists</window.KLabel>
         <span style={{ width: 44 }}></span>
       </div>
       <window.Rule style={{ marginLeft: 20, marginRight: 20, width: 'auto' }} />
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 32px' }}>
         <p className="serif" style={{ fontSize: 15, fontStyle: 'italic', color: 'var(--ink-2)', lineHeight: 1.55, margin: 0, textWrap: 'pretty' }}>
-          A shared table is one list your whole crew adds to — everyone gives their own verdict, scores average across the group.
+          A shared list is one your whole crew adds to — everyone gives their own verdict, scores average across the group.
         </p>
 
-        <window.AFField label="Start a new table">
+        <window.AFField label="Start a new shared list">
           <window.AFInput value={name} onChange={e => setName(e.target.value)} placeholder="e.g. The Dinner Crew" />
           <button disabled={busy || !name.trim()} onClick={() => go(() => onCreate(name.trim()))} className="kl" style={{
             marginTop: 9, width: '100%', background: 'var(--ink)', color: 'var(--paper)', border: 'none',
             borderRadius: 12, padding: '13px 0', cursor: 'pointer', opacity: (busy || !name.trim()) ? 0.5 : 1,
-          }}>Create table</button>
+          }}>Create list</button>
         </window.AFField>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '24px 0 4px' }}>
@@ -3226,7 +3368,7 @@ function TablesSheet({ tables, onCreate, onJoin, onLeave, onClose }) {
           <button disabled={busy || code.trim().length < 4} onClick={() => go(() => onJoin(code.trim()))} className="kl" style={{
             marginTop: 9, width: '100%', background: 'transparent', color: 'var(--ink)', border: '1px solid var(--ink)',
             borderRadius: 12, padding: '13px 0', cursor: 'pointer', opacity: (busy || code.trim().length < 4) ? 0.5 : 1,
-          }}>Join table</button>
+          }}>Join list</button>
         </window.AFField>
 
         {msg && (
@@ -3235,7 +3377,7 @@ function TablesSheet({ tables, onCreate, onJoin, onLeave, onClose }) {
 
         {(tables && tables.length > 0) && (
           <div style={{ marginTop: 28 }}>
-            <window.KLabel>Tables you're at</window.KLabel>
+            <window.KLabel>Shared lists you're at</window.KLabel>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 10 }}>
               {tables.map(t => (
                 <div key={t.id} style={{
@@ -3275,7 +3417,7 @@ function SharedDetail({ p, onBack, onEdit, onVerdict, onVisited, onAddToMine, on
     <div className="fl sans" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--paper)' }}>
       <div style={{ padding: '14px 18px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
         <button onClick={onBack} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-2)', display: 'flex', alignItems: 'center', gap: 5, padding: '6px 0' }}>
-          <span style={{ fontSize: 14 }}>‹</span> Table
+          <span style={{ fontSize: 14 }}>‹</span> List
         </button>
         <window.StatusTag status={p.status} />
       </div>
@@ -3299,10 +3441,10 @@ function SharedDetail({ p, onBack, onEdit, onVerdict, onVisited, onAddToMine, on
               <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
                 <window.OverallBadge value={p.overall} size={56} showTier />
                 <div>
-                  <window.KLabel>Table average</window.KLabel>
+                  <window.KLabel>Group average</window.KLabel>
                   <div className="sans" style={{ fontSize: 12.5, color: 'var(--ink-2)', marginTop: 4 }}>
                     {p.reviews.length} {p.reviews.length === 1 ? 'verdict' : 'verdicts'}
-                    {p.again != null ? (p.again ? ' · the table would go again' : ' · the table says once was enough') : ''}
+                    {p.again != null ? (p.again ? ' · the group would go again' : ' · the group says once was enough') : ''}
                   </div>
                 </div>
               </div>
@@ -3397,7 +3539,7 @@ function SharedPlaceForm({ place, prefill, onSave, onCancel }) {
     <div className="fl sans" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--paper)' }}>
       <div style={{ padding: '14px 20px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
         <button onClick={onCancel} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', padding: '6px 0' }}>Cancel</button>
-        <window.KLabel>{place ? 'Edit Place' : 'Add to the Table'}</window.KLabel>
+        <window.KLabel>{place ? 'Edit Place' : 'Add to the List'}</window.KLabel>
         <button onClick={save} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--spot)', fontWeight: 600, padding: '6px 0' }}>Save</button>
       </div>
       <window.Rule style={{ marginLeft: 20, marginRight: 20, width: 'auto' }} />
@@ -3442,7 +3584,7 @@ function SharedPlaceForm({ place, prefill, onSave, onCancel }) {
             className="serif" style={{ fontFamily: '"Cormorant Garamond",Georgia,serif' }} />
         </window.AFField>
 
-        <window.AFField label="Note to the table (optional)">
+        <window.AFField label="Note to the group (optional)">
           <textarea value={d.note || ''} onChange={e => set({ note: e.target.value })} rows={2}
             placeholder="Why it's on the list…"
             style={{ ...window.afInputStyle, fontFamily: '"Cormorant Garamond",Georgia,serif', fontSize: 15, lineHeight: 1.5, resize: 'vertical' }}></textarea>
@@ -3507,7 +3649,7 @@ function VerdictForm({ place, onSave, onCancel }) {
         </window.AFField>
 
         <window.AFField label="One-line note (optional)">
-          <window.AFInput value={note} onChange={e => setNote(e.target.value)} placeholder="What you'd tell the table"
+          <window.AFInput value={note} onChange={e => setNote(e.target.value)} placeholder="What you'd tell the group"
             className="serif" style={{ fontFamily: '"Cormorant Garamond",Georgia,serif' }} />
         </window.AFField>
       </div>
@@ -3521,7 +3663,7 @@ Object.assign(window, { TableChips, TableMeta, TablesSheet, SharedDetail, Shared
 
 <script type="text/babel">
 // ── your private journal (Phase 5 behavior, with the table switcher) ──────
-// ── "Add to…" sheet: personal lists (toggle) + copy to shared table (7E) ───
+// ── "Add to…" sheet: personal lists (toggle) + copy to shared list (7E) ───
 // ── batch "Add to…" for multiple selected places (multi-select) ───────────
 function BatchAddSheet({ ids, places, org, onClose }) {
   const selPlaces = (places || []).filter(p => ids.includes(p.id));
@@ -3563,7 +3705,7 @@ function BatchAddSheet({ ids, places, org, onClose }) {
           <button onClick={create} disabled={busy || !newName.trim()} className="kl" style={{ flexShrink: 0, background: 'var(--ink)', color: 'var(--paper)', border: 'none', borderRadius: 10, padding: '0 16px', cursor: 'pointer', opacity: (busy || !newName.trim()) ? 0.5 : 1 }}>Add</button>
         </div>
 
-        <window.KLabel style={{ marginTop: 24, display: 'block' }}>Copy all to a shared table</window.KLabel>
+        <window.KLabel style={{ marginTop: 24, display: 'block' }}>Copy all to a shared list</window.KLabel>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 9 }}>
           {tables.map(t => (
             <div key={t.id} style={{ ...rowS }}>
@@ -3571,7 +3713,78 @@ function BatchAddSheet({ ids, places, org, onClose }) {
               <button onClick={() => copyAll(t)} disabled={busy} className="kl" style={{ flexShrink: 0, background: done[t.id] ? 'transparent' : 'var(--spot)', color: done[t.id] ? 'var(--ink-3)' : 'var(--paper)', border: done[t.id] ? '1px solid var(--line)' : 'none', borderRadius: 999, padding: '7px 13px', cursor: 'pointer' }}>{done[t.id] ? 'Copied ✓' : 'Copy all'}</button>
             </div>
           ))}
-          {!tables.length && <span className="serif" style={{ fontSize: 13.5, fontStyle: 'italic', color: 'var(--ink-3)' }}>You're not at any shared tables yet.</span>}
+          {!tables.length && <span className="serif" style={{ fontSize: 13.5, fontStyle: 'italic', color: 'var(--ink-3)' }}>You're not at any shared lists yet.</span>}
+        </div>
+
+        {msg && <div className="sans" style={{ marginTop: 16, padding: '10px 13px', borderRadius: 10, background: 'var(--spot-soft)', color: 'var(--spot-2)', fontSize: 13 }}>{msg}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ── batch "Add to…" for places selected inside a SHARED LIST ──────────────
+// Copies the selected shared-list places into your private journal, and
+// optionally into one of your personal lists (creating it if needed).
+function BatchAddSharedSheet({ places, org, col, onClose }) {
+  const sel = places || [];
+  const lists = org.lists || [];
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const [newName, setNewName] = React.useState('');
+  const wrap = async (fn, ok) => { setBusy(true); setMsg(null); try { await fn(); if (ok) setMsg(ok); } catch (e) { setMsg((e && e.message) || 'Something went wrong.'); } setBusy(false); };
+  // map a shared-list place into a private-journal payload (uses MY verdict if I have one)
+  const toPrivate = (sp) => {
+    const mine = sp.myReview;
+    return {
+      name: sp.name, cuisine: sp.cuisine, hood: sp.hood || '', address: sp.address || '',
+      price: sp.price || 2, dish: sp.dish || '', tags: sp.tags || [],
+      meal: [], occasion: [], photos: sp.photos || [],
+      lat: sp.lat == null ? null : sp.lat, lng: sp.lng == null ? null : sp.lng,
+      status: mine ? 'reviewed' : 'want',
+      s: mine ? (mine.s || null) : null,
+      overall: (mine && mine.overall != null) ? Number(mine.overall) : null,
+      again: mine ? (mine.again == null ? null : mine.again) : null,
+      note: mine ? (mine.note || sp.note || '') : (sp.note || ''),
+      date: mine ? window.todayISO() : null,
+    };
+  };
+  const addOne = (sp) => (col.addPlaceAwait ? col.addPlaceAwait(toPrivate(sp)) : Promise.resolve(col.addPlace(toPrivate(sp))));
+  const addJournal = () => wrap(async () => { for (const sp of sel) await addOne(sp); }, 'Added ' + sel.length + ' to your journal.');
+  const addList = (l) => wrap(async () => { for (const sp of sel) { const id = await addOne(sp); await org.addToList(l.id, id); } }, 'Added ' + sel.length + ' to ' + l.name + '.');
+  const create = () => { if (!newName.trim()) return; wrap(async () => { const l = await org.newList(newName.trim()); for (const sp of sel) { const id = await addOne(sp); await org.addToList(l.id, id); } setNewName(''); }, 'List created with ' + sel.length + ' places.'); };
+  const rowS = { display: 'flex', alignItems: 'center', gap: 10, background: 'var(--card)', border: '1px solid var(--line)', borderRadius: 12, padding: '11px 13px', width: '100%' };
+  return (
+    <div className="fl sans" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--paper)' }}>
+      <div style={{ padding: '14px 20px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+        <button onClick={onClose} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--spot)', fontWeight: 600, padding: '6px 0' }}>Done</button>
+        <window.KLabel>Add {sel.length} to…</window.KLabel>
+        <span style={{ width: 44 }}></span>
+      </div>
+      <window.Rule style={{ marginLeft: 20, marginRight: 20, width: 'auto' }} />
+      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px 32px' }}>
+        <div className="serif" style={{ fontSize: 18, fontWeight: 560, color: 'var(--ink)' }}>{sel.length} place{sel.length === 1 ? '' : 's'} selected</div>
+        <p className="sans" style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5, margin: '5px 0 0', textWrap: 'pretty' }}>Copies them into your own journal — with your verdict if you've given one. A snapshot, not a live link.</p>
+
+        <window.KLabel style={{ marginTop: 18, display: 'block' }}>My journal</window.KLabel>
+        <div style={{ ...rowS, marginTop: 9 }}>
+          <span className="sans" style={{ flex: 1, fontSize: 14, color: 'var(--ink)' }}>Add all to my journal</span>
+          <button onClick={addJournal} disabled={busy} className="kl" style={{ flexShrink: 0, background: 'var(--ink)', color: 'var(--paper)', border: 'none', borderRadius: 999, padding: '7px 13px', cursor: 'pointer', opacity: busy ? 0.5 : 1 }}>Add all</button>
+        </div>
+
+        <window.KLabel style={{ marginTop: 22, display: 'block' }}>Add all to a list</window.KLabel>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 9 }}>
+          {lists.map(l => (
+            <div key={l.id} style={{ ...rowS }}>
+              <span className="sans" style={{ flex: 1, fontSize: 14, color: 'var(--ink)' }}>{l.name}</span>
+              <span className="num" style={{ fontSize: 11, color: 'var(--ink-3)', marginRight: 4 }}>{(l.placeIds || []).length}</span>
+              <button onClick={() => addList(l)} disabled={busy} className="kl" style={{ flexShrink: 0, background: 'var(--ink)', color: 'var(--paper)', border: 'none', borderRadius: 999, padding: '7px 13px', cursor: 'pointer', opacity: busy ? 0.5 : 1 }}>Add all</button>
+            </div>
+          ))}
+          {!lists.length && <span className="serif" style={{ fontSize: 13.5, fontStyle: 'italic', color: 'var(--ink-3)' }}>No lists yet — make one below.</span>}
+        </div>
+        <div style={{ display: 'flex', gap: 7, marginTop: 9 }}>
+          <window.AFInput value={newName} onChange={e => setNewName(e.target.value)} placeholder="New list name" />
+          <button onClick={create} disabled={busy || !newName.trim()} className="kl" style={{ flexShrink: 0, background: 'var(--ink)', color: 'var(--paper)', border: 'none', borderRadius: 10, padding: '0 16px', cursor: 'pointer', opacity: (busy || !newName.trim()) ? 0.5 : 1 }}>Add</button>
         </div>
 
         {msg && <div className="sans" style={{ marginTop: 16, padding: '10px 13px', borderRadius: 10, background: 'var(--spot-soft)', color: 'var(--spot-2)', fontSize: 13 }}>{msg}</div>}
@@ -3627,8 +3840,8 @@ function AddToSheet({ place, org, onClose }) {
           <button onClick={create} disabled={busy || !newName.trim()} className="kl" style={{ flexShrink: 0, background: 'var(--ink)', color: 'var(--paper)', border: 'none', borderRadius: 10, padding: '0 16px', cursor: 'pointer', opacity: (busy || !newName.trim()) ? 0.5 : 1 }}>Add</button>
         </div>
 
-        <window.KLabel style={{ marginTop: 24, display: 'block' }}>Copy to a Shared Table</window.KLabel>
-        <p className="sans" style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5, margin: '5px 0 0', textWrap: 'pretty' }}>Copies this place and your verdict into a group table — a snapshot, not a live link.</p>
+        <window.KLabel style={{ marginTop: 24, display: 'block' }}>Copy to a Shared List</window.KLabel>
+        <p className="sans" style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5, margin: '5px 0 0', textWrap: 'pretty' }}>Copies this place and your verdict into a shared list — a snapshot, not a live link.</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 9 }}>
           {tables.map(t => (
             <div key={t.id} style={{ ...rowS, cursor: 'default' }}>
@@ -3636,7 +3849,7 @@ function AddToSheet({ place, org, onClose }) {
               <button onClick={() => copy(t)} disabled={busy} className="kl" style={{ flexShrink: 0, background: copied[t.id] ? 'transparent' : 'var(--spot)', color: copied[t.id] ? 'var(--ink-3)' : 'var(--paper)', border: copied[t.id] ? '1px solid var(--line)' : 'none', borderRadius: 999, padding: '7px 13px', cursor: 'pointer' }}>{copied[t.id] ? 'Copied ✓ · again' : 'Copy'}</button>
             </div>
           ))}
-          {!tables.length && <span className="serif" style={{ fontSize: 13.5, fontStyle: 'italic', color: 'var(--ink-3)' }}>You're not at any shared tables yet.</span>}
+          {!tables.length && <span className="serif" style={{ fontSize: 13.5, fontStyle: 'italic', color: 'var(--ink-3)' }}>You're not at any shared lists yet.</span>}
         </div>
 
         {msg && <div className="sans" style={{ marginTop: 16, padding: '10px 13px', borderRadius: 10, background: 'var(--spot-soft)', color: 'var(--spot-2)', fontSize: 13 }}>{msg}</div>}
@@ -3782,8 +3995,8 @@ function JournalSpace({ user, col, switcher, onSettings, onChrome, org, listFilt
   );
 }
 
-// ── a shared table: group list + verdicts ─────────────────────────────────
-function TableSpace({ user, tableId, switcher, onSettings, onChrome, col }) {
+// ── a shared list: group list + verdicts ─────────────────────────────────
+function TableSpace({ user, tableId, switcher, onSettings, onChrome, col, org }) {
   const tbl = window.useSharedTable(tableId, user);
   const [view, setView] = React.useState({ screen: 'pipeline', placeId: null, prefill: null });
   const go = (screen, extra) => setView({ screen, placeId: null, prefill: null, ...(extra || {}) });
@@ -3842,6 +4055,9 @@ function TableSpace({ user, tableId, switcher, onSettings, onChrome, col }) {
         onSave={(v) => { tbl.saveVerdict(place.id, v); go('detail', { placeId: place.id }); }}
         onCancel={() => go('detail', { placeId: place.id })} />
     );
+  } else if (view.screen === 'batch' && org && col) {
+    const picked = (tbl.data.places || []).filter(p => (view.ids || []).includes(p.id));
+    body = <BatchAddSharedSheet places={picked} org={org} col={col} onClose={() => go('pipeline')} />;
   } else if (view.screen === 'detail' && place) {
     body = (
       <window.SharedDetail
@@ -3866,6 +4082,7 @@ function TableSpace({ user, tableId, switcher, onSettings, onChrome, col }) {
         }
         onOpenPlace={(id) => go('detail', { placeId: id })}
         onLog={() => go(window.GMAPS_KEY ? 'search' : 'form')}
+        onBatchOrganize={(org && col) ? (ids) => go('batch', { ids }) : null}
         onBatchDelete={(ids) => tbl.deletePlaces(ids || [])}
         onSettings={onSettings} />
     );
@@ -3880,7 +4097,7 @@ function TableSpace({ user, tableId, switcher, onSettings, onChrome, col }) {
   );
 }
 
-// ── signed-in shell: journal ↔ shared tables, settings, table sheet ──────
+// ── signed-in shell: journal ↔ shared lists, settings, table sheet ──────
 // ── bottom tab bar + tab screens (Phase 7D) ───────────────────────────────
 function TabIcon({ tab, on }) {
   const c = on ? 'var(--spot)' : 'var(--ink-3)';
@@ -3911,7 +4128,7 @@ function TabIcon({ tab, on }) {
 }
 
 function BottomTabs({ active, onPick, alert }) {
-  const items = [['overview', 'Overview'], ['tables', 'Tables'], ['map', 'Map'], ['account', 'Account']];
+  const items = [['overview', 'Overview'], ['tables', 'Lists'], ['map', 'Map'], ['account', 'Account']];
   return (
     <div className="fl sans" style={{ flexShrink: 0, display: 'flex', borderTop: '1px solid var(--line)', background: 'var(--paper)', paddingBottom: 'env(safe-area-inset-bottom)' }}>
       {items.map(([k, label]) => {
@@ -3935,7 +4152,7 @@ function BottomTabs({ active, onPick, alert }) {
   );
 }
 
-// Tables landing (shared tables). "My Lists" section arrives in 7E.
+// Tables landing (shared lists). "My Lists" section arrives in 7E.
 function TablesHome({ uid, lists, tables, freshIds, onOpen, onManage, onOpenList, onNewList, onDeleteList, onDeleteTable, onLeaveTable }) {
   const [newName, setNewName] = React.useState('');
   const [confirmList, setConfirmList] = React.useState(null);
@@ -3947,7 +4164,7 @@ function TablesHome({ uid, lists, tables, freshIds, onOpen, onManage, onOpenList
       <div style={{ padding: '18px 20px 12px', flexShrink: 0, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <window.KLabel style={{ color: 'var(--spot)' }}>The Standing Table</window.KLabel>
-          <div className="serif" style={{ fontSize: 26, fontWeight: 560, color: 'var(--ink)', letterSpacing: '-0.01em', marginTop: 3, lineHeight: 1.05 }}>Tables</div>
+          <div className="serif" style={{ fontSize: 26, fontWeight: 560, color: 'var(--ink)', letterSpacing: '-0.01em', marginTop: 3, lineHeight: 1.05 }}>Lists</div>
         </div>
         <button onClick={onManage} className="kl" style={{ background: 'var(--ink)', color: 'var(--paper)', border: 'none', borderRadius: 999, padding: '9px 15px', cursor: 'pointer' }}>+ New / Join</button>
       </div>
@@ -3979,7 +4196,7 @@ function TablesHome({ uid, lists, tables, freshIds, onOpen, onManage, onOpenList
 
         <window.Rule style={{ marginTop: 22 }} />
 
-        <window.KLabel style={{ marginTop: 16, display: 'block' }}>Shared Tables</window.KLabel>
+        <window.KLabel style={{ marginTop: 16, display: 'block' }}>Shared Lists</window.KLabel>
         <p className="sans" style={{ fontSize: 12.5, color: 'var(--ink-3)', lineHeight: 1.5, margin: '5px 0 0', textWrap: 'pretty' }}>Lists your whole crew adds to — everyone gives their own verdict.</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
           {(tables || []).map(t => {
@@ -4005,8 +4222,8 @@ function TablesHome({ uid, lists, tables, freshIds, onOpen, onManage, onOpenList
           })}
           {!(tables && tables.length) && (
             <div style={{ textAlign: 'center', padding: '28px 20px' }}>
-              <div className="serif" style={{ fontSize: 15, fontStyle: 'italic', color: 'var(--ink-3)' }}>No shared tables yet.</div>
-              <button onClick={onManage} className="kl" style={{ marginTop: 12, background: 'none', border: '1px solid var(--line)', borderRadius: 999, padding: '9px 16px', cursor: 'pointer', color: 'var(--ink-2)' }}>+ Start or join a table</button>
+              <div className="serif" style={{ fontSize: 15, fontStyle: 'italic', color: 'var(--ink-3)' }}>No shared lists yet.</div>
+              <button onClick={onManage} className="kl" style={{ marginTop: 12, background: 'none', border: '1px solid var(--line)', borderRadius: 999, padding: '9px 16px', cursor: 'pointer', color: 'var(--ink-2)' }}>+ Start or join a shared list</button>
             </div>
           )}
         </div>
@@ -4054,10 +4271,10 @@ function TablesTab({ user, col, tables, lists, org, refreshTables, onChrome, onO
   }
   if (space) {
     return (
-      <TableSpace key={space} user={user} tableId={space} col={col} onChrome={onChrome} onSettings={onOpenAccount}
+      <TableSpace key={space} user={user} tableId={space} col={col} org={org} onChrome={onChrome} onSettings={onOpenAccount}
         switcher={
           <div style={{ padding: '0 20px 10px', flexShrink: 0 }}>
-            <button onClick={() => { setSpace(null); onChrome && onChrome(true); }} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-2)', padding: '2px 0' }}>‹ All tables</button>
+            <button onClick={() => { setSpace(null); onChrome && onChrome(true); }} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-2)', padding: '2px 0' }}>‹ All lists</button>
           </div>
         } />
     );
@@ -4339,12 +4556,12 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
             </div>
             <div className="serif" style={{ fontSize: 22, fontWeight: 560, color: 'var(--ink)', marginTop: 6, lineHeight: 1.15 }}>How places get here</div>
             <p className="sans" style={{ fontSize: 13.5, color: 'var(--ink-2)', lineHeight: 1.6, marginTop: 8 }}>
-              A place appears on the map only when you add it through the <strong>Google search</strong> box in <strong>Log</strong> — that is what saves its location. Typing an address by hand will not place a pin. This works in your own journal and inside a Shared Table.
+              A place appears on the map only when you add it through the <strong>Google search</strong> box in <strong>Log</strong> — that is what saves its location. Typing an address by hand will not place a pin. This works in your own journal and inside a Shared List.
             </p>
             <window.Rule style={{ marginTop: 16 }} />
             <div className="serif" style={{ fontSize: 18, fontWeight: 560, color: 'var(--ink)', marginTop: 16 }}>The filters &amp; search</div>
             <p className="sans" style={{ fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.6, marginTop: 6 }}>
-              The first dropdown narrows to one of your <strong>Lists</strong> (◾) or <strong>Shared Tables</strong> (◆). The others filter by cuisine, price, and whether you would go again. The search box finds a pin by name, and the number shows how many pins are visible.
+              The first dropdown narrows to one of your <strong>Lists</strong> (◾) or <strong>Shared Lists</strong> (◆). The others filter by cuisine, price, and whether you would go again. The search box finds a pin by name, and the number shows how many pins are visible.
             </p>
             <div className="serif" style={{ fontSize: 18, fontWeight: 560, color: 'var(--ink)', marginTop: 16 }}>Tapping a pin</div>
             <p className="sans" style={{ fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.6, marginTop: 6 }}>
@@ -4358,7 +4575,7 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
 }
 
 function AccountTab({ user, col, profile, setProfile, onStartTour }) {
-  // re-fetch a Google photo for every place (journal + shared tables) whose
+  // re-fetch a Google photo for every place (journal + shared lists) whose
   // photo is missing, or points at a dead Google URL from a rotated API key
   const repairPhotos = async (onProgress) => {
     const broken = (p) => {
@@ -4440,10 +4657,10 @@ const TOUR_STEPS = [
     body: <span>The <strong>Overview</strong> tab holds every place across three stages — <strong>Want</strong>, <strong>Visited</strong> and <strong>Reviewed</strong>. Tap the stage chips to switch, and tap any card to open it. When you review, you score <strong>Food, Value, Vibe and Service</strong> — weighted your way (set it under <strong>Account → Rating weights</strong>).</span> },
   { kicker: 'Logging', tab: 'overview', target: 'log', title: 'Always log from Google',
     body: <span>Tap <strong>+ Log</strong> (top right) and <strong>search for the place in Google</strong>, then pick it from the results. That auto-fills the name, cuisine and address <em>and</em> saves its location — which is what places it on your Map. Typing by hand skips the map pin.</span> },
-  { kicker: 'Tables', tab: 'tables', target: 'tab-tables', title: 'Start with a List',
-    body: <span>The <strong>Tables</strong> tab has your private <strong>Lists</strong> and the <strong>Shared Tables</strong> your crew builds together. <strong>We'd recommend creating a List first</strong> — grouping your reviews makes organising and sharing your reviews easier, and your lists show up on your public guide too. From any place, tap <strong>Add to a list or table</strong> to file it (or copy it into a shared table).</span> },
+  { kicker: 'Lists', tab: 'tables', target: 'tab-tables', title: 'Start with a List',
+    body: <span>The <strong>Lists</strong> tab has your private <strong>Lists</strong> and the <strong>Shared Lists</strong> your crew builds together. <strong>We'd recommend creating a List first</strong> — grouping your reviews makes organising and sharing your reviews easier, and your lists show up on your public guide too. From any place, tap <strong>Add to a list</strong> to file it (or copy it into a shared list).</span> },
   { kicker: 'Map', tab: 'map', target: 'tab-map', title: 'See everything on the map',
-    body: <span>The <strong>Map</strong> plots every place you logged via Google. Filter by list, table, cuisine, price or “go again”, search by name, and tap a pin for its photo, directions and a jump to the review. Tap <strong>?</strong> on the map anytime for help.</span> },
+    body: <span>The <strong>Map</strong> plots every place you logged via Google. Filter by list, shared list, cuisine, price or “go again”, search by name, and tap a pin for its photo, directions and a jump to the review. Tap <strong>?</strong> on the map anytime for help.</span> },
   { kicker: 'Your data', tab: 'account', target: 'tab-account', title: 'Share & back up',
     body: <span>In <strong>Account</strong> you can publish your <strong>public guide</strong> to share reviews and lists, tune your rating weights, and <strong>Export</strong> a backup of everything (or <strong>Import</strong> it back). Export before any big change.</span> },
   { kicker: 'Install', tab: 'overview', title: 'Add it to your home screen',
