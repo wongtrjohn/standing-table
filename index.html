@@ -1306,7 +1306,7 @@ Object.assign(window, { AppPipeline, AppDetail, AppWelcome, AppSettings, AppCard
 // app-form.jsx — Working add / edit / review form. Depends on ds.jsx, atoms.jsx, store.jsx.
 // Exports: window.AppForm
 
-const AF_MEALS = ['Breakfast', 'Lunch', 'Dinner'];
+const AF_MEALS = ['Breakfast', 'Lunch', 'Dinner', 'Dessert/Tea'];
 const AF_OCCASIONS = ['Date', 'Group', 'Quick bite', 'Solo'];
 
 // ── small form atoms ──────────────────────────────────────────────────────
@@ -2819,7 +2819,7 @@ const social = {
     try {
       const lQ = await window.sb.from('personal_lists')
         .select('id,name,created_at,personal_list_places(place_id)')
-        .eq('owner', prof.id).order('created_at');
+        .eq('owner', prof.id).eq('is_public', true).order('created_at');
       if (!lQ.error) {
         const byId = {}; places.forEach(p => { byId[p.id] = p; });
         lists = (lQ.data || []).map(l => ({
@@ -2881,21 +2881,31 @@ const social = {
   },
 
   // ── personal lists (Phase 7E) ─────────────────────────────────────────
-  async fetchLists() {
-    const { data, error } = await window.sb
+  async fetchLists(ownerId) {
+    // Scope to the owner explicitly. RLS also grants public-guide readers
+    // SELECT on other people's public lists, so without this filter a user's
+    // own "My Lists" would include strangers' published lists.
+    let q = window.sb
       .from('personal_lists')
-      .select('id,name,created_at,personal_list_places(place_id)')
+      .select('id,name,is_public,created_at,personal_list_places(place_id)')
       .order('created_at');
+    if (ownerId) q = q.eq('owner', ownerId);
+    const { data, error } = await q;
     if (error) throw error;
     return (data || []).map(l => ({
-      id: l.id, name: l.name, created_at: l.created_at,
+      id: l.id, name: l.name, is_public: !!l.is_public, created_at: l.created_at,
       placeIds: (l.personal_list_places || []).map(x => x.place_id),
     }));
   },
   async createList(name) {
+    // New lists are private by default (DB default is_public = false).
     const { data, error } = await window.sb.from('personal_lists').insert({ name }).select().single();
     if (error) throw error;
     return data;
+  },
+  async setListPublic(id, isPublic) {
+    const { error } = await window.sb.from('personal_lists').update({ is_public: !!isPublic }).eq('id', id);
+    if (error) throw error;
   },
   async deleteList(id) {
     const { error } = await window.sb.from('personal_lists').delete().eq('id', id);
@@ -4153,7 +4163,7 @@ function BottomTabs({ active, onPick, alert }) {
 }
 
 // Tables landing (shared lists). "My Lists" section arrives in 7E.
-function TablesHome({ uid, lists, tables, freshIds, onOpen, onManage, onOpenList, onNewList, onDeleteList, onDeleteTable, onLeaveTable }) {
+function TablesHome({ uid, lists, tables, freshIds, onOpen, onManage, onOpenList, onNewList, onDeleteList, onSetListPublic, onDeleteTable, onLeaveTable }) {
   const [newName, setNewName] = React.useState('');
   const [confirmList, setConfirmList] = React.useState(null);
   const [confirmTbl, setConfirmTbl] = React.useState(null);
@@ -4172,7 +4182,7 @@ function TablesHome({ uid, lists, tables, freshIds, onOpen, onManage, onOpenList
       <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px 28px' }}>
 
         <window.KLabel>My Lists</window.KLabel>
-        <p className="sans" style={{ fontSize: 12.5, color: 'var(--ink-3)', lineHeight: 1.5, margin: '5px 0 0', textWrap: 'pretty' }}>Your own private groupings of places you've reviewed.</p>
+        <p className="sans" style={{ fontSize: 12.5, color: 'var(--ink-3)', lineHeight: 1.5, margin: '5px 0 0', textWrap: 'pretty' }}>Your own groupings of places you've reviewed. Lists are <strong>private</strong> until you make them public — public lists appear on your guide once you publish it.</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
           {(lists || []).map(l => (
             <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--card)', border: '1px solid var(--line)', borderRadius: 12, padding: '11px 13px' }}>
@@ -4180,6 +4190,7 @@ function TablesHome({ uid, lists, tables, freshIds, onOpen, onManage, onOpenList
                 <span className="serif" style={{ fontSize: 17, fontWeight: 560, color: 'var(--ink)' }}>{l.name}</span>
                 <span className="num" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{(l.placeIds || []).length}</span>
               </button>
+              <button onClick={async () => { setBusy(true); try { await onSetListPublic(l.id, !l.is_public); } catch (e) {} setBusy(false); }} disabled={busy} title={l.is_public ? 'Public — visible on your guide. Tap to make private.' : 'Private — only you can see it. Tap to make public.'} className="kl" style={{ flexShrink: 0, cursor: 'pointer', borderRadius: 999, padding: '6px 11px', border: '1px solid ' + (l.is_public ? 'var(--spot)' : 'var(--line)'), background: l.is_public ? 'var(--spot)' : 'transparent', color: l.is_public ? 'var(--paper)' : 'var(--ink-3)' }}>{l.is_public ? 'Public' : 'Private'}</button>
               {confirmList === l.id ? (
                 <button onClick={async () => { setBusy(true); try { await onDeleteList(l.id); } catch (e) {} setConfirmList(null); setBusy(false); }} className="kl" style={{ flexShrink: 0, background: 'var(--spot)', color: 'var(--paper)', border: 'none', borderRadius: 999, padding: '6px 11px', cursor: 'pointer' }}>Delete ✓</button>
               ) : (
@@ -4262,7 +4273,7 @@ function TablesTab({ user, col, tables, lists, org, refreshTables, onChrome, onO
   }
   if (listId) {
     const list = (lists || []).find(l => l.id === listId);
-    if (!list) { return <TablesHome uid={user.id} lists={lists} tables={tables} freshIds={freshIds} onOpen={(id) => setSpace(id)} onManage={() => setSheet(true)} onOpenList={(id) => setListId(id)} onNewList={(n) => org.newList(n)} onDeleteList={(id) => org.deleteList(id)} onDeleteTable={(id) => org.deleteTable(id)} onLeaveTable={(id) => org.leaveTable(id)} />; }
+    if (!list) { return <TablesHome uid={user.id} lists={lists} tables={tables} freshIds={freshIds} onOpen={(id) => setSpace(id)} onManage={() => setSheet(true)} onOpenList={(id) => setListId(id)} onNewList={(n) => org.newList(n)} onDeleteList={(id) => org.deleteList(id)} onSetListPublic={(id, pub) => org.setListPublic(id, pub)} onDeleteTable={(id) => org.deleteTable(id)} onLeaveTable={(id) => org.leaveTable(id)} />; }
     return (
       <JournalSpace key={listId} user={user} col={col} org={org}
         listFilter={list} title={list.name}
@@ -4286,6 +4297,7 @@ function TablesTab({ user, col, tables, lists, org, refreshTables, onChrome, onO
       onOpenList={(id) => setListId(id)}
       onNewList={(n) => org.newList(n)}
       onDeleteList={(id) => org.deleteList(id)}
+      onSetListPublic={(id, pub) => org.setListPublic(id, pub)}
       onDeleteTable={(id) => org.deleteTable(id)}
       onLeaveTable={(id) => org.leaveTable(id)} />
   );
@@ -4658,7 +4670,7 @@ const TOUR_STEPS = [
   { kicker: 'Logging', tab: 'overview', target: 'log', title: 'Always log from Google',
     body: <span>Tap <strong>+ Log</strong> (top right) and <strong>search for the place in Google</strong>, then pick it from the results. That auto-fills the name, cuisine and address <em>and</em> saves its location — which is what places it on your Map. Typing by hand skips the map pin.</span> },
   { kicker: 'Lists', tab: 'tables', target: 'tab-tables', title: 'Start with a List',
-    body: <span>The <strong>Lists</strong> tab has your private <strong>Lists</strong> and the <strong>Shared Lists</strong> your crew builds together. <strong>We'd recommend creating a List first</strong> — grouping your reviews makes organising and sharing your reviews easier, and your lists show up on your public guide too. From any place, tap <strong>Add to a list</strong> to file it (or copy it into a shared list).</span> },
+    body: <span>The <strong>Lists</strong> tab has your private <strong>Lists</strong> and the <strong>Shared Lists</strong> your crew builds together. <strong>We'd recommend creating a List first</strong> — grouping your reviews makes organising and sharing your reviews easier. Lists start <strong>private</strong>; flip one to <strong>Public</strong> and it'll appear on your guide once you publish it. From any place, tap <strong>Add to a list</strong> to file it (or copy it into a shared list).</span> },
   { kicker: 'Map', tab: 'map', target: 'tab-map', title: 'See everything on the map',
     body: <span>The <strong>Map</strong> plots every place you logged via Google. Filter by list, shared list, cuisine, price or “go again”, search by name, and tap a pin for its photo, directions and a jump to the review. Tap <strong>?</strong> on the map anytime for help.</span> },
   { kicker: 'Your data', tab: 'account', target: 'tab-account', title: 'Share & back up',
@@ -4797,7 +4809,7 @@ function SignedApp({ user }) {
   React.useEffect(() => { try { setPill(!localStorage.getItem('st7-tour-seen')); } catch (e) {} }, []);
 
   const refreshTables = React.useCallback(() => window.socialApi.fetchTables().then(ts => { setTables(ts); return ts; }), []);
-  const refreshLists = React.useCallback(() => window.socialApi.fetchLists().then(ls => { setLists(ls); return ls; }), []);
+  const refreshLists = React.useCallback(() => window.socialApi.fetchLists(user.id).then(ls => { setLists(ls); return ls; }), [user.id]);
 
   React.useEffect(() => {
     window.socialApi.ensureProfile(user).then(p => { setProfile(p); window.setGlobalWeights(p && p.weights); }).catch(() => {});
@@ -4833,6 +4845,7 @@ function SignedApp({ user }) {
     lists, tables,
     newList: async (name) => { const l = await window.socialApi.createList(name); await refreshLists(); return l; },
     deleteList: async (id) => { await window.socialApi.deleteList(id); await refreshLists(); },
+    setListPublic: async (id, isPublic) => { await window.socialApi.setListPublic(id, isPublic); await refreshLists(); },
     addToList: async (listId, placeId) => { await window.socialApi.addToList(listId, placeId); await refreshLists(); },
     removeFromList: async (listId, placeId) => { await window.socialApi.removeFromList(listId, placeId); await refreshLists(); },
     copyToTable: async (tableId, place) => { await window.socialApi.copyPlaceToTable(tableId, place, user.id); },
