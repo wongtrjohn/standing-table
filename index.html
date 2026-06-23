@@ -1722,6 +1722,7 @@ function rowToPlace(r) {
     lat: r.lat == null ? null : Number(r.lat), lng: r.lng == null ? null : Number(r.lng),
     spent: r.spent == null ? null : Number(r.spent), people: r.people == null ? null : Number(r.people),
     weights: r.weights || null,
+    fav: !!r.fav,
     photos: r.photos || [], createdAt: r.created_at,
   };
 }
@@ -1738,6 +1739,7 @@ function placeToRow(p, uid) {
     lat: p.lat == null ? null : p.lat, lng: p.lng == null ? null : p.lng,
     spent: p.spent == null ? null : p.spent, people: p.people == null ? null : p.people,
     weights: p.weights || null,
+    fav: !!p.fav,
     photos: p.photos || [],
   };
 }
@@ -3006,6 +3008,11 @@ const social = {
       const rQ = await sb.from('shared_reviews').select('place_id,overall,again').in('place_id', ids);
       if (!rQ.error) reviews = rQ.data || [];
     }
+    let favIds = new Set();
+    if (ids.length) {
+      const fQ = await sb.from('shared_favourites').select('place_id').eq('user_id', uid).in('place_id', ids);
+      if (!fQ.error) favIds = new Set((fQ.data || []).map(r => r.place_id));
+    }
     return coords.map(sp => {
       const rv = reviews.filter(r => r.place_id === sp.id);
       const n = rv.length;
@@ -3016,6 +3023,7 @@ const social = {
         name: sp.name, cuisine: sp.cuisine || 'Italian', hood: sp.hood || '', price: sp.price || 2,
         lat: Number(sp.lat), lng: Number(sp.lng), photos: sp.photos || [],
         overall, again: n ? (yes > no ? true : (no > yes ? false : null)) : null,
+        fav: favIds.has(sp.id),
       };
     });
   },
@@ -3063,6 +3071,13 @@ function useSharedTable(tableId, user) {
         if (rvQ.error) throw rvQ.error;
         reviews = rvQ.data;
       }
+      // My favourites in this list (per-member, like verdicts). Soft-fails so the
+      // list still loads if the shared_favourites table hasn't been created yet.
+      let favIds = new Set();
+      if (placeIds.length) {
+        const fvQ = await sb.from('shared_favourites').select('place_id').eq('user_id', user.id).in('place_id', placeIds);
+        if (!fvQ.error) favIds = new Set((fvQ.data || []).map(r => r.place_id));
+      }
 
       const uids = [...new Set([
         ...memQ.data.map(m => m.user_id),
@@ -3101,6 +3116,7 @@ function useSharedTable(tableId, user) {
           again: n ? (yes > no ? true : (no > yes ? false : null)) : null,
           reviews: rv,
           myReview: rv.find(r => r.user_id === user.id) || null,
+          fav: favIds.has(sp.id),
           byline: 'via ' + nameOf(sp.created_by) + (n ? ' · ' + n + (n === 1 ? ' verdict' : ' verdicts') : ''),
         };
       });
@@ -3177,6 +3193,19 @@ function useSharedTable(tableId, user) {
         s: v.s, overall: v.overall, again: v.again, note: v.note || null,
       }, { onConflict: 'place_id,user_id' });
       if (error) throw error;
+    }),
+    // My own favourite within this shared list (each member keeps their own).
+    toggleFav: (id) => run(async () => {
+      const cur = ((data && data.places) || []).find(x => x.id === id);
+      if (cur && cur.fav) {
+        const { error } = await window.sb.from('shared_favourites')
+          .delete().eq('place_id', id).eq('user_id', user.id);
+        if (error) throw error;
+      } else {
+        const { error } = await window.sb.from('shared_favourites')
+          .upsert({ place_id: id, user_id: user.id }, { onConflict: 'place_id,user_id' });
+        if (error) throw error;
+      }
     }),
   };
 }
@@ -3447,7 +3476,7 @@ function TablesSheet({ tables, onCreate, onJoin, onLeave, onClose }) {
 }
 
 // ── shared place detail: group verdicts ───────────────────────────────────
-function SharedDetail({ p, onBack, onEdit, onVerdict, onVisited, onAddToMine, onDelete }) {
+function SharedDetail({ p, onBack, onEdit, onVerdict, onVisited, onAddToMine, onDelete, onToggleFav }) {
   const [added, setAdded] = React.useState(false);
   const photo = (p.photos && p.photos[0]) || null;
   return (
@@ -3456,7 +3485,15 @@ function SharedDetail({ p, onBack, onEdit, onVerdict, onVisited, onAddToMine, on
         <button onClick={onBack} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-2)', display: 'flex', alignItems: 'center', gap: 5, padding: '6px 0' }}>
           <span style={{ fontSize: 14 }}>‹</span> List
         </button>
-        <window.StatusTag status={p.status} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {onToggleFav && (
+            <button onClick={onToggleFav} aria-label={p.fav ? 'Remove favourite' : 'Mark as favourite'} aria-pressed={!!p.fav} style={{
+              background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px',
+              fontSize: 19, lineHeight: 1, color: p.fav ? 'var(--spot)' : 'var(--ink-3)',
+            }}>{p.fav ? '★' : '☆'}</button>
+          )}
+          <window.StatusTag status={p.status} />
+        </div>
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -4106,6 +4143,7 @@ function TableSpace({ user, tableId, switcher, onSettings, onChrome, col, org })
         onVerdict={() => go('verdict', { placeId: place.id })}
         onVisited={() => tbl.markVisited(place.id)}
         onAddToMine={col ? () => addToPrivate(place) : null}
+        onToggleFav={() => tbl.toggleFav(place.id)}
         onDelete={() => { tbl.deletePlace(place.id); go('pipeline'); }} />
     );
   } else {
@@ -4123,6 +4161,7 @@ function TableSpace({ user, tableId, switcher, onSettings, onChrome, col, org })
         onLog={() => go(window.GMAPS_KEY ? 'search' : 'form')}
         onBatchOrganize={(org && col) ? (ids) => go('batch', { ids }) : null}
         onBatchDelete={(ids) => tbl.deletePlaces(ids || [])}
+        onToggleFav={(id) => tbl.toggleFav(id)}
         onSettings={onSettings} />
     );
   }
