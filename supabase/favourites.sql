@@ -22,11 +22,22 @@ create table if not exists public.shared_favourites (
 
 alter table public.shared_favourites enable row level security;
 
--- Each member can read and manage ONLY their own favourite rows.
+-- Members of a table can READ every favourite on its places (so the app can
+-- show a per-place favourite count and rank the most-loved spots to the top)...
 drop policy if exists "shared_favourites_select_own" on public.shared_favourites;
-create policy "shared_favourites_select_own" on public.shared_favourites
-  for select using (user_id = auth.uid());
+drop policy if exists "shared_favourites_select_members" on public.shared_favourites;
+create policy "shared_favourites_select_members" on public.shared_favourites
+  for select using (
+    exists (
+      select 1
+      from public.shared_places sp
+      join public.shared_table_members m on m.table_id = sp.table_id
+      where sp.id = shared_favourites.place_id
+        and m.user_id = auth.uid()
+    )
+  );
 
+-- ...but each member may only ADD or REMOVE their OWN favourites.
 drop policy if exists "shared_favourites_insert_own" on public.shared_favourites;
 create policy "shared_favourites_insert_own" on public.shared_favourites
   for insert with check (user_id = auth.uid());
