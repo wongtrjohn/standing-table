@@ -4405,6 +4405,7 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
   const [cuisine, setCuisine] = React.useState('all');
   const [price, setPrice] = React.useState('all');
   const [again, setAgain] = React.useState('all');
+  const [favOnly, setFavOnly] = React.useState(false);
   const [q, setQ] = React.useState('');
   const [state, setState] = React.useState('loading');
   const [errMsg, setErrMsg] = React.useState(null);
@@ -4437,6 +4438,7 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
     if (price !== 'all' && e.price !== Number(price)) return false;
     if (again === 'yes' && e.again !== true) return false;
     if (again === 'no' && e.again !== false) return false;
+    if (favOnly && !e.fav) return false;
     if (q.trim() && (e.name || '').toLowerCase().indexOf(q.trim().toLowerCase()) < 0) return false;
     return true;
   };
@@ -4452,7 +4454,7 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
     return [...m.values()];
   }, [filtered.map(e => e.kind + e.id).join('|')]);
 
-  React.useEffect(() => { setSelected(null); }, [filterVal, cuisine, price, again, q]);
+  React.useEffect(() => { setSelected(null); }, [filterVal, cuisine, price, again, favOnly, q]);
 
   React.useEffect(() => {
     if (!all.length) { setState('empty'); return; }
@@ -4541,6 +4543,12 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
         <MapFilterSelect value={cuisine} onChange={setCuisine} options={cuisineSel} />
         <MapFilterSelect value={price} onChange={setPrice} options={priceOpts} />
         <MapFilterSelect value={again} onChange={setAgain} options={againOpts} />
+        <button onClick={() => setFavOnly(v => !v)} className="kl" aria-pressed={favOnly} title="Show favourites only" style={{
+          flexShrink: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4,
+          border: '1px solid ' + (favOnly ? 'var(--spot)' : 'var(--line)'), borderRadius: 999,
+          background: favOnly ? 'var(--spot)' : 'var(--card)',
+          color: favOnly ? 'var(--paper)' : 'var(--ink-2)', padding: '7px 12px', fontSize: 9,
+        }}>{favOnly ? '★' : '☆'} Favourites</button>
         <span className="kl" style={{ color: 'var(--ink-3)', flexShrink: 0, paddingLeft: 4 }}>{groups.length}</span>
       </div>
 
