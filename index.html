@@ -741,10 +741,13 @@ Object.assign(window, { useCollection, compressPhoto, dbExport, dbImportFile, ne
 // Depends on ds.jsx, atoms.jsx, store.jsx. Exports: AppPipeline, AppDetail, AppWelcome, AppSettings
 
 // ── card (reads real data: photos[], ISO dates) ───────────────────────────
-function AppCard({ p, onTap, selecting, selected }) {
+function AppCard({ p, onTap, selecting, selected, onToggleFav }) {
   const reviewed = p.status === 'reviewed';
   const photo = (p.photos && p.photos[0]) || null;
   const hasMeta = p.date || p.again != null || p.byline || (p.status === 'want' && p.tags && p.tags[0]);
+  // Favourite star: a tappable toggle when onToggleFav is provided (journal /
+  // private lists), otherwise a read-only marker only when already favourited.
+  const showStar = !!onToggleFav || !!p.fav;
   return (
     <button onClick={onTap} style={{
       width: '100%', textAlign: 'left', background: 'var(--card)',
@@ -762,9 +765,24 @@ function AppCard({ p, onTap, selecting, selected }) {
       <div style={{ flex: 1, padding: '13px 14px', minWidth: 0, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
           <div className="serif" style={{ fontSize: 17, fontWeight: 560, color: 'var(--ink)', lineHeight: 1.15, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{p.name}</div>
-          {reviewed && p.overall != null
-            ? <div className="num" style={{ fontSize: 21, fontWeight: 600, color: 'var(--spot)', letterSpacing: '-0.02em', flexShrink: 0 }}>{p.overall.toFixed(1)}</div>
-            : <span style={{ flexShrink: 0 }}><window.PriceLevel level={p.price} size={12} color="var(--ink-3)" /></span>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            {showStar && (
+              <span
+                role="button"
+                tabIndex={onToggleFav ? 0 : -1}
+                aria-label={p.fav ? 'Remove favourite' : 'Mark as favourite'}
+                aria-pressed={!!p.fav}
+                onClick={onToggleFav ? (e) => { e.stopPropagation(); onToggleFav(); } : undefined}
+                style={{
+                  fontSize: 16, lineHeight: 1, userSelect: 'none',
+                  cursor: onToggleFav ? 'pointer' : 'default',
+                  color: p.fav ? 'var(--spot)' : 'var(--ink-3)',
+                }}>{p.fav ? '★' : '☆'}</span>
+            )}
+            {reviewed && p.overall != null
+              ? <div className="num" style={{ fontSize: 21, fontWeight: 600, color: 'var(--spot)', letterSpacing: '-0.02em' }}>{p.overall.toFixed(1)}</div>
+              : <window.PriceLevel level={p.price} size={12} color="var(--ink-3)" />}
+          </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 7, minWidth: 0 }}>
           <window.CuisineDot cuisine={p.cuisine} showLabel />
@@ -851,7 +869,7 @@ const APP_LANES = [
   { key: 'reviewed', label: 'Reviewed', accent: 'var(--spot)' },
 ];
 
-function AppPipeline({ places, onOpenPlace, onLog, onSettings, switcher, title, hideLog, onBatchOrganize, onBatchDelete, onTour }) {
+function AppPipeline({ places, onOpenPlace, onLog, onSettings, switcher, title, hideLog, onBatchOrganize, onBatchDelete, onTour, onToggleFav }) {
   const canBatch = !!(onBatchOrganize || onBatchDelete);
   const [selecting, setSelecting] = React.useState(false);
   const [sel, setSel] = React.useState(() => new Set());
@@ -891,9 +909,10 @@ function AppPipeline({ places, onOpenPlace, onLog, onSettings, switcher, title, 
   };
   const laneCount = (k) => places.filter(p => p.status === k && passesFilters(p)).length;
   const byStatus = (k) => {
-    const arr = places.filter(p => p.status === k && passesFilters(p));
-    if (k === 'reviewed') return arr.slice().sort((a, b) => (b.overall || 0) - (a.overall || 0));
-    return arr;
+    let arr = places.filter(p => p.status === k && passesFilters(p));
+    if (k === 'reviewed') arr = arr.slice().sort((a, b) => (b.overall || 0) - (a.overall || 0));
+    // Favourites float to the top of the lane, keeping their relative order.
+    return arr.filter(p => p.fav).concat(arr.filter(p => !p.fav));
   };
   const lane = APP_LANES.find(l => l.key === active);
   const ql = q.trim().toLowerCase();
@@ -1001,7 +1020,7 @@ function AppPipeline({ places, onOpenPlace, onLog, onSettings, switcher, title, 
       <window.Rule style={{ marginLeft: 20, marginRight: 20, width: 'auto' }} />
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 20px 32px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {list.map(p => <AppCard key={p.id} p={p} selecting={selecting} selected={sel.has(p.id)} onTap={() => selecting ? toggleSel(p.id) : onOpenPlace(p.id)} />)}
+        {list.map(p => <AppCard key={p.id} p={p} selecting={selecting} selected={sel.has(p.id)} onTap={() => selecting ? toggleSel(p.id) : onOpenPlace(p.id)} onToggleFav={(!selecting && onToggleFav) ? () => onToggleFav(p.id) : null} />)}
         {!list.length && (
           <div style={{ textAlign: 'center', padding: '48px 24px' }}>
             <div className="serif" style={{ fontSize: 17, fontStyle: 'italic', color: 'var(--ink-3)' }}>
@@ -1040,7 +1059,7 @@ function AppPipeline({ places, onOpenPlace, onLog, onSettings, switcher, title, 
 }
 
 // ── detail ────────────────────────────────────────────────────────────────
-function AppDetail({ place: p, onBack, onEdit, onReview, onDelete, avgScores, onAddTo, onRemoveFromList }) {
+function AppDetail({ place: p, onBack, onEdit, onReview, onDelete, avgScores, onAddTo, onRemoveFromList, onToggleFav }) {
   const photo = (p.photos && p.photos[0]) || null;
   return (
     <div className="fl sans" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--paper)' }}>
@@ -1048,7 +1067,15 @@ function AppDetail({ place: p, onBack, onEdit, onReview, onDelete, avgScores, on
         <button onClick={onBack} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-2)', display: 'flex', alignItems: 'center', gap: 5, padding: '6px 0' }}>
           <span style={{ fontSize: 14 }}>‹</span> Pipeline
         </button>
-        <window.StatusTag status={p.status} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {onToggleFav && (
+            <button onClick={onToggleFav} aria-label={p.fav ? 'Remove favourite' : 'Mark as favourite'} aria-pressed={!!p.fav} style={{
+              background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px',
+              fontSize: 19, lineHeight: 1, color: p.fav ? 'var(--spot)' : 'var(--ink-3)',
+            }}>{p.fav ? '★' : '☆'}</button>
+          )}
+          <window.StatusTag status={p.status} />
+        </div>
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -3982,6 +4009,7 @@ function JournalSpace({ user, col, switcher, onSettings, onChrome, org, listFilt
         onReview={() => go('form', { placeId: place.id, forceStatus: 'reviewed' })}
         onAddTo={org ? () => go('organize', { placeId: place.id }) : null}
         onRemoveFromList={listFilter ? () => { org.removeFromList(listFilter.id, place.id); go('pipeline'); } : null}
+        onToggleFav={() => col.updatePlace(place.id, { fav: !place.fav })}
         onDelete={() => { col.deletePlace(place.id); go('pipeline'); }} />
     );
   }
@@ -4000,6 +4028,7 @@ function JournalSpace({ user, col, switcher, onSettings, onChrome, org, listFilt
       onLog={() => go(window.GMAPS_KEY ? 'search' : 'form')}
       onBatchOrganize={org ? (ids) => go('batch', { ids }) : null}
       onBatchDelete={(ids) => col.deletePlaces(ids || [])}
+      onToggleFav={(id) => { const pl = (col.places || []).find(x => x.id === id); col.updatePlace(id, { fav: !(pl && pl.fav) }); }}
       onTour={onTour}
       onSettings={onSettings} />
   );
