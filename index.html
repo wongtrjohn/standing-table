@@ -747,7 +747,7 @@ function AppCard({ p, onTap, selecting, selected, onToggleFav }) {
   const hasMeta = p.date || p.again != null || p.byline || (p.status === 'want' && p.tags && p.tags[0]);
   // Favourite star: a tappable toggle when onToggleFav is provided (journal /
   // private lists), otherwise a read-only marker only when already favourited.
-  const showStar = !!onToggleFav || !!p.fav;
+  const showStar = !!onToggleFav || !!p.fav || p.favCount > 0;
   return (
     <button onClick={onTap} style={{
       width: '100%', textAlign: 'left', background: 'var(--card)',
@@ -767,17 +767,20 @@ function AppCard({ p, onTap, selecting, selected, onToggleFav }) {
           <div className="serif" style={{ fontSize: 17, fontWeight: 560, color: 'var(--ink)', lineHeight: 1.15, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{p.name}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
             {showStar && (
-              <span
-                role="button"
-                tabIndex={onToggleFav ? 0 : -1}
-                aria-label={p.fav ? 'Remove favourite' : 'Mark as favourite'}
-                aria-pressed={!!p.fav}
-                onClick={onToggleFav ? (e) => { e.stopPropagation(); onToggleFav(); } : undefined}
-                style={{
-                  fontSize: 16, lineHeight: 1, userSelect: 'none',
-                  cursor: onToggleFav ? 'pointer' : 'default',
-                  color: p.fav ? 'var(--spot)' : 'var(--ink-3)',
-                }}>{p.fav ? '★' : '☆'}</span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+                <span
+                  role="button"
+                  tabIndex={onToggleFav ? 0 : -1}
+                  aria-label={p.fav ? 'Remove favourite' : 'Mark as favourite'}
+                  aria-pressed={!!p.fav}
+                  onClick={onToggleFav ? (e) => { e.stopPropagation(); onToggleFav(); } : undefined}
+                  style={{
+                    fontSize: 16, lineHeight: 1, userSelect: 'none',
+                    cursor: onToggleFav ? 'pointer' : 'default',
+                    color: p.fav ? 'var(--spot)' : 'var(--ink-3)',
+                  }}>{p.fav ? '★' : '☆'}</span>
+                {p.favCount > 0 && <span className="num" title={p.favCount + (p.favCount === 1 ? ' favourite' : ' favourites')} style={{ fontSize: 11.5, fontWeight: 600, color: p.fav ? 'var(--spot)' : 'var(--ink-3)' }}>{p.favCount}</span>}
+              </span>
             )}
             {reviewed && p.overall != null
               ? <div className="num" style={{ fontSize: 21, fontWeight: 600, color: 'var(--spot)', letterSpacing: '-0.02em' }}>{p.overall.toFixed(1)}</div>
@@ -911,8 +914,13 @@ function AppPipeline({ places, onOpenPlace, onLog, onSettings, switcher, title, 
   const byStatus = (k) => {
     let arr = places.filter(p => p.status === k && passesFilters(p));
     if (k === 'reviewed') arr = arr.slice().sort((a, b) => (b.overall || 0) - (a.overall || 0));
-    // Favourites float to the top of the lane, keeping their relative order.
-    return arr.filter(p => p.fav).concat(arr.filter(p => !p.fav));
+    // Float favourites to the top: shared lists rank by how many members
+    // favourited a place; personal lanes use the owner's own star. Stable —
+    // places with equal favourite weight keep their existing order.
+    const favScore = (p) => p.favCount != null ? p.favCount : (p.fav ? 1 : 0);
+    return arr.map((p, i) => [p, i])
+      .sort((a, b) => (favScore(b[0]) - favScore(a[0])) || (a[1] - b[1]))
+      .map(x => x[0]);
   };
   const lane = APP_LANES.find(l => l.key === active);
   const ql = q.trim().toLowerCase();
@@ -1069,10 +1077,13 @@ function AppDetail({ place: p, onBack, onEdit, onReview, onDelete, avgScores, on
         </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {onToggleFav && (
-            <button onClick={onToggleFav} aria-label={p.fav ? 'Remove favourite' : 'Mark as favourite'} aria-pressed={!!p.fav} style={{
-              background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px',
-              fontSize: 19, lineHeight: 1, color: p.fav ? 'var(--spot)' : 'var(--ink-3)',
-            }}>{p.fav ? '★' : '☆'}</button>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+              <button onClick={onToggleFav} aria-label={p.fav ? 'Remove favourite' : 'Mark as favourite'} aria-pressed={!!p.fav} style={{
+                background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px',
+                fontSize: 19, lineHeight: 1, color: p.fav ? 'var(--spot)' : 'var(--ink-3)',
+              }}>{p.fav ? '★' : '☆'}</button>
+              {p.favCount > 0 && <span className="num" style={{ fontSize: 13, fontWeight: 600, color: p.fav ? 'var(--spot)' : 'var(--ink-3)' }}>{p.favCount}</span>}
+            </span>
           )}
           <window.StatusTag status={p.status} />
         </div>
@@ -3071,12 +3082,17 @@ function useSharedTable(tableId, user) {
         if (rvQ.error) throw rvQ.error;
         reviews = rvQ.data;
       }
-      // My favourites in this list (per-member, like verdicts). Soft-fails so the
-      // list still loads if the shared_favourites table hasn't been created yet.
-      let favIds = new Set();
+      // Favourites in this list (per-member, like verdicts): count how many
+      // members starred each place, and track which ones are mine. Soft-fails so
+      // the list still loads if the shared_favourites table/policy isn't set up.
+      const favCounts = {};
+      const myFavs = new Set();
       if (placeIds.length) {
-        const fvQ = await sb.from('shared_favourites').select('place_id').eq('user_id', user.id).in('place_id', placeIds);
-        if (!fvQ.error) favIds = new Set((fvQ.data || []).map(r => r.place_id));
+        const fvQ = await sb.from('shared_favourites').select('place_id,user_id').in('place_id', placeIds);
+        if (!fvQ.error) (fvQ.data || []).forEach(r => {
+          favCounts[r.place_id] = (favCounts[r.place_id] || 0) + 1;
+          if (r.user_id === user.id) myFavs.add(r.place_id);
+        });
       }
 
       const uids = [...new Set([
@@ -3116,7 +3132,8 @@ function useSharedTable(tableId, user) {
           again: n ? (yes > no ? true : (no > yes ? false : null)) : null,
           reviews: rv,
           myReview: rv.find(r => r.user_id === user.id) || null,
-          fav: favIds.has(sp.id),
+          fav: myFavs.has(sp.id),
+          favCount: favCounts[sp.id] || 0,
           byline: 'via ' + nameOf(sp.created_by) + (n ? ' · ' + n + (n === 1 ? ' verdict' : ' verdicts') : ''),
         };
       });
@@ -3487,10 +3504,13 @@ function SharedDetail({ p, onBack, onEdit, onVerdict, onVisited, onAddToMine, on
         </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {onToggleFav && (
-            <button onClick={onToggleFav} aria-label={p.fav ? 'Remove favourite' : 'Mark as favourite'} aria-pressed={!!p.fav} style={{
-              background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px',
-              fontSize: 19, lineHeight: 1, color: p.fav ? 'var(--spot)' : 'var(--ink-3)',
-            }}>{p.fav ? '★' : '☆'}</button>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+              <button onClick={onToggleFav} aria-label={p.fav ? 'Remove favourite' : 'Mark as favourite'} aria-pressed={!!p.fav} style={{
+                background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px',
+                fontSize: 19, lineHeight: 1, color: p.fav ? 'var(--spot)' : 'var(--ink-3)',
+              }}>{p.fav ? '★' : '☆'}</button>
+              {p.favCount > 0 && <span className="num" style={{ fontSize: 13, fontWeight: 600, color: p.fav ? 'var(--spot)' : 'var(--ink-3)' }}>{p.favCount}</span>}
+            </span>
           )}
           <window.StatusTag status={p.status} />
         </div>
@@ -3508,6 +3528,11 @@ function SharedDetail({ p, onBack, onEdit, onVerdict, onVisited, onAddToMine, on
           <div className="serif" style={{ fontSize: 30, fontWeight: 580, color: 'var(--ink)', letterSpacing: '-0.015em', lineHeight: 1.05, marginTop: 5 }}>{p.name}</div>
           {p.address ? <div className="sans" style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 5 }}>{p.address}</div> : null}
           <div className="kl" style={{ marginTop: 7 }}>{p.byline}</div>
+          {p.favCount > 0 && (
+            <div className="kl" style={{ marginTop: 6, color: 'var(--spot)' }}>
+              ★ {p.favCount} {p.favCount === 1 ? 'member favourited this' : 'members favourited this'}{p.fav ? ' · including you' : ''}
+            </div>
+          )}
 
           {/* group verdict */}
           {p.reviews.length > 0 ? (
