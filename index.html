@@ -78,6 +78,12 @@
   .kl{font-family:"Spline Sans Mono",monospace;text-transform:uppercase;
       letter-spacing:0.16em;font-size:10px;font-weight:500;color:var(--ink-3);}
   .num{font-family:"Spline Sans Mono",monospace;font-variant-numeric:tabular-nums;}
+  .fl button,.fl [role="button"]{transition:transform .09s ease, filter .09s ease;}
+  .fl button:active,.fl [role="button"]:active{transform:scale(0.96);filter:brightness(0.97);}
+  @media (prefers-reduced-motion: reduce){
+    .fl button,.fl [role="button"]{transition:none;}
+    .fl button:active,.fl [role="button"]:active{transform:none;filter:none;}
+  }
   .fl ::-webkit-scrollbar{width:8px;height:8px;}
   .fl ::-webkit-scrollbar-thumb{background:rgba(28,24,21,0.18);border-radius:4px;}
   .fl ::-webkit-scrollbar-track{background:transparent;}
@@ -4679,7 +4685,10 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
                 </div>
               </div>
               {groups.length > 1 && (
-                <button onClick={nextNearby} aria-label="Next nearby place" style={{ flexShrink: 0, width: 34, alignSelf: 'stretch', background: 'var(--paper-2)', border: 'none', borderLeft: '1px solid var(--line)', cursor: 'pointer', color: 'var(--ink-2)', fontSize: 18 }}>›</button>
+                <button onClick={nextNearby} aria-label="Next nearby place" style={{ flexShrink: 0, width: 40, alignSelf: 'stretch', background: 'var(--paper-2)', border: 'none', borderLeft: '1px solid var(--line)', cursor: 'pointer', color: 'var(--ink-2)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1, padding: 0 }}>
+                  <span className="kl" style={{ fontSize: 7.5, color: 'var(--ink-3)', letterSpacing: '0.1em' }}>Next</span>
+                  <span style={{ fontSize: 18, lineHeight: 1 }}>›</span>
+                </button>
               )}
             </div>
             <div style={{ display: 'flex', gap: 6, padding: '0 12px 12px' }}>
@@ -5038,7 +5047,7 @@ function SignedApp({ user }) {
   }
 
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div className="fl" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <ErrorBanner message={col.saveError} />
       <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
         {tab === 'overview' && chrome && pill && tour == null && (
