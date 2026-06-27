@@ -2998,6 +2998,7 @@ const social = {
     if (p.s && p.overall != null) {
       const { error: e2 } = await window.sb.from('shared_reviews').upsert({
         place_id: sp.id, user_id: uid, s: p.s, overall: p.overall, again: p.again, note: p.note || null,
+        spent: p.spent == null ? null : p.spent, people: p.people == null ? null : p.people,
       }, { onConflict: 'place_id,user_id' });
       if (e2) throw e2;
     }
@@ -3119,7 +3120,10 @@ function useSharedTable(tableId, user) {
       const places = plQ.data.map(sp => {
         const rv = reviews
           .filter(r => r.place_id === sp.id)
-          .map(r => ({ ...r, overall: Number(r.overall), name: nameOf(r.user_id) }));
+          .map(r => ({ ...r, overall: Number(r.overall),
+            spent: r.spent == null ? null : Number(r.spent),
+            people: r.people == null ? null : Number(r.people),
+            name: nameOf(r.user_id) }));
         const n = rv.length;
         const avg = (k) => n ? rv.reduce((a, r) => a + ((r.s && r.s[k]) || 0), 0) / n : null;
         const overall = n ? Math.round(rv.reduce((a, r) => a + r.overall, 0) / n * 10) / 10 : null;
@@ -3214,6 +3218,7 @@ function useSharedTable(tableId, user) {
       const { error } = await window.sb.from('shared_reviews').upsert({
         place_id: placeId, user_id: user.id,
         s: v.s, overall: v.overall, again: v.again, note: v.note || null,
+        spent: v.spent == null ? null : v.spent, people: v.people == null ? null : v.people,
       }, { onConflict: 'place_id,user_id' });
       if (error) throw error;
     }),
@@ -3531,6 +3536,8 @@ function TablesSheet({ tables, onCreate, onJoin, onLeave, onClose }) {
 function SharedDetail({ p, onBack, onEdit, onVerdict, onVisited, onAddToMine, onDelete, onToggleFav }) {
   const [added, setAdded] = React.useState(false);
   const photo = (p.photos && p.photos[0]) || null;
+  const ppReviews = (p.reviews || []).filter(r => r.spent != null && r.people);
+  const avgPP = ppReviews.length ? ppReviews.reduce((a, r) => a + r.spent / r.people, 0) / ppReviews.length : null;
   return (
     <div className="fl sans" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--paper)' }}>
       <div style={{ padding: '14px 18px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
@@ -3580,6 +3587,11 @@ function SharedDetail({ p, onBack, onEdit, onVerdict, onVisited, onAddToMine, on
                     {p.reviews.length} {p.reviews.length === 1 ? 'verdict' : 'verdicts'}
                     {p.again != null ? (p.again ? ' · the group would go again' : ' · the group says once was enough') : ''}
                   </div>
+                  {avgPP != null && (
+                    <div className="num" style={{ fontSize: 12.5, color: 'var(--spot-2)', marginTop: 3 }}>
+                      ~{avgPP.toFixed(2)} per person · {ppReviews.length} {ppReviews.length === 1 ? 'diner' : 'diners'}
+                    </div>
+                  )}
                 </div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 14 }}>
@@ -3591,6 +3603,11 @@ function SharedDetail({ p, onBack, onEdit, onVerdict, onVisited, onAddToMine, on
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <span className="sans" style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--ink)' }}>{r.name}</span>
                       {r.note ? <div className="serif" style={{ fontSize: 13, fontStyle: 'italic', color: 'var(--ink-2)', marginTop: 2, textWrap: 'pretty' }}>“{r.note}”</div> : null}
+                      {r.spent != null && r.people ? (
+                        <div className="num" style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: 3 }}>
+                          {Number(r.spent).toFixed(2)} · {(r.spent / r.people).toFixed(2)}/person · {r.people} {r.people === 1 ? 'person' : 'people'}
+                        </div>
+                      ) : null}
                     </div>
                     {r.again != null && <window.AgainTag again={r.again} compact />}
                     <span className="num" style={{ fontSize: 18, fontWeight: 600, color: 'var(--spot)', flexShrink: 0 }}>{r.overall.toFixed(1)}</span>
@@ -3739,6 +3756,8 @@ function VerdictForm({ place, onSave, onCancel }) {
   const [s, setS] = React.useState(() => (existing && existing.s) || { food: null, value: null, vibe: null, service: null });
   const [again, setAgain] = React.useState(existing ? existing.again : true);
   const [note, setNote] = React.useState((existing && existing.note) || '');
+  const [spent, setSpent] = React.useState(existing && existing.spent != null ? existing.spent : null);
+  const [people, setPeople] = React.useState(existing && existing.people != null ? existing.people : null);
   const done = window.AXIS_ORDER.every(k => s[k] != null);
   const overall = done ? window.calcWeighted(s) : null;
 
@@ -3747,7 +3766,7 @@ function VerdictForm({ place, onSave, onCancel }) {
       <div style={{ padding: '14px 20px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
         <button onClick={onCancel} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', padding: '6px 0' }}>Cancel</button>
         <window.KLabel>My Verdict · {place.name}</window.KLabel>
-        <button disabled={!done} onClick={() => done && onSave({ s, again, note, overall: Math.round(overall * 10) / 10 })} className="kl"
+        <button disabled={!done} onClick={() => done && onSave({ s, again, note, overall: Math.round(overall * 10) / 10, spent, people })} className="kl"
           style={{ background: 'none', border: 'none', cursor: done ? 'pointer' : 'default', color: done ? 'var(--spot)' : 'var(--ink-3)', fontWeight: 600, padding: '6px 0' }}>Save</button>
       </div>
       <window.Rule style={{ marginLeft: 20, marginRight: 20, width: 'auto' }} />
@@ -3781,6 +3800,23 @@ function VerdictForm({ place, onSave, onCancel }) {
             ))}
           </div>
         </window.AFField>
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          <window.AFField label="What I spent here" style={{ flex: 1 }}>
+            <window.AFInput type="number" inputMode="decimal" min="0" value={spent == null ? '' : spent}
+              onChange={e => setSpent(e.target.value === '' ? null : Number(e.target.value))} placeholder="e.g. 120" className="num" />
+          </window.AFField>
+          <window.AFField label="People in my party" style={{ flex: 1 }}>
+            <window.AFInput type="number" inputMode="numeric" min="1" value={people == null ? '' : people}
+              onChange={e => setPeople(e.target.value === '' ? null : Math.max(1, Math.round(Number(e.target.value))))} placeholder="e.g. 2" className="num" />
+          </window.AFField>
+        </div>
+        {spent != null && people ? (
+          <div style={{ marginTop: 12, display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', background: 'var(--spot-soft)', borderRadius: 12, padding: '11px 14px' }}>
+            <span className="kl" style={{ color: 'var(--spot-2)' }}>Price per person</span>
+            <span className="num" style={{ fontSize: 18, fontWeight: 600, color: 'var(--spot-2)' }}>{(spent / people).toFixed(2)}</span>
+          </div>
+        ) : null}
 
         <window.AFField label="One-line note (optional)">
           <window.AFInput value={note} onChange={e => setNote(e.target.value)} placeholder="What you'd tell the group"
@@ -3879,6 +3915,8 @@ function BatchAddSharedSheet({ places, org, col, onClose }) {
       overall: (mine && mine.overall != null) ? Number(mine.overall) : null,
       again: mine ? (mine.again == null ? null : mine.again) : null,
       note: mine ? (mine.note || sp.note || '') : (sp.note || ''),
+      spent: mine && mine.spent != null ? Number(mine.spent) : null,
+      people: mine && mine.people != null ? Number(mine.people) : null,
       date: mine ? window.todayISO() : null,
     };
   };
@@ -4152,6 +4190,8 @@ function TableSpace({ user, tableId, switcher, onSettings, onChrome, col, org })
       overall: (mine && mine.overall != null) ? Number(mine.overall) : null,
       again: mine ? (mine.again == null ? null : mine.again) : null,
       note: mine ? (mine.note || sp.note || '') : (sp.note || ''),
+      spent: mine && mine.spent != null ? Number(mine.spent) : null,
+      people: mine && mine.people != null ? Number(mine.people) : null,
       date: mine ? window.todayISO() : null,
     });
   };
