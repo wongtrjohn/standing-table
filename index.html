@@ -2442,7 +2442,14 @@ function AppSettingsCloud({ places, userEmail, profile, onSaveProfile, onClose, 
             setBusy(true); setMsg('Scanning for missing photos…');
             try {
               const r = await onRepairPhotos((done, total, fixed) => setMsg('Restoring photos… ' + done + ' / ' + total + ' checked · ' + fixed + ' restored'));
-              setMsg(r.scanned === 0 ? 'No missing photos found — everything has a picture.' : ('Restored ' + r.fixed + ' of ' + r.scanned + ' places that were missing photos.'));
+              if (r.scanned === 0) { setMsg('No missing photos found — everything has a picture.'); }
+              else {
+                const extra = [];
+                if (r.blocked) extra.push(r.blocked + ' blocked by permissions');
+                if (r.notFound) extra.push(r.notFound + ' not found on Google');
+                if (r.failed) extra.push(r.failed + ' failed' + (r.lastErr ? ' (' + r.lastErr + ')' : ''));
+                setMsg('Restored ' + r.fixed + ' of ' + r.scanned + (extra.length ? ' · ' + extra.join(' · ') : '') + '.');
+              }
             } catch (e) { setMsg('Failed: ' + e.message); }
             setBusy(false);
           }} style={{ ...row, opacity: busy ? 0.6 : 1 }}>
@@ -4998,7 +5005,7 @@ function AccountTab({ user, col, profile, setProfile, onStartTour }) {
     } catch (e) { /* tables unreachable — repair the journal at least */ }
 
     const scanned = journalVictims.length + sharedVictims.length;
-    let fixed = 0, done = 0;
+    let fixed = 0, done = 0, notFound = 0, blocked = 0, failed = 0, lastErr = null;
 
     const lookup = async (p) => {
       const r = await window.csvRowsToPlaces(
@@ -5013,23 +5020,27 @@ function AccountTab({ user, col, profile, setProfile, onStartTour }) {
       try {
         const photos = await lookup(p);
         if (photos) { col.updatePlace(p.id, { photos }); fixed++; }
-      } catch (e) {}
+        else notFound++;
+      } catch (e) { failed++; lastErr = (e && e.message) || String(e); }
       done++; onProgress && onProgress(done, scanned, fixed);
     }
     for (const p of sharedVictims) {
       try {
         const dataUrls = await lookup(p);
-        if (dataUrls) {
+        if (!dataUrls) { notFound++; }
+        else {
           const photos = await window.cloudUploadPhotos(user.id, dataUrls);
-          // .select() returns the rows actually updated — under RLS a blocked
-          // update succeeds with 0 rows, so only count it when a row changed.
+          // .select() returns the rows actually changed — an RLS-blocked update
+          // "succeeds" with zero rows and no error, so distinguish the cases.
           const { data: upd, error } = await window.sb.from('shared_places').update({ photos }).eq('id', p.id).select('id');
-          if (!error && upd && upd.length) fixed++;
+          if (error) { failed++; lastErr = error.message; }
+          else if (upd && upd.length) fixed++;
+          else blocked++;
         }
-      } catch (e) {}
+      } catch (e) { failed++; lastErr = (e && e.message) || String(e); }
       done++; onProgress && onProgress(done, scanned, fixed);
     }
-    return { fixed, scanned };
+    return { fixed, scanned, notFound, blocked, failed, lastErr };
   };
 
   // Backfill opening hours for places saved before the hours feature (or any
