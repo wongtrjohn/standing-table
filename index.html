@@ -600,10 +600,97 @@ function setGlobalWeights(w) {
   ['food','value','vibe','service'].forEach(k => { if (typeof w[k] === 'number') AXIS_WEIGHTS[k] = w[k]; });
 }
 
+// ── opening hours (from Google Places) ────────────────────────────────────
+// hours = { periods:[{open:{day,hour,minute},close:{day,hour,minute}}],
+//           weekdayDescriptions:[...], utcOffset:<minutes> }. day: 0=Sun..6=Sat.
+const DOW_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const DOW_LONG = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+function fmtClock(h, m) {
+  const ap = (h % 24) < 12 ? 'AM' : 'PM';
+  let hh = (h % 24) % 12; if (hh === 0) hh = 12;
+  return hh + ':' + String(m || 0).padStart(2, '0') + ' ' + ap;
+}
+// open/closed right now, computed in the place's OWN timezone. null when no data,
+// so the badge only ever shows for places that came in with Google hours.
+function openStatus(hours) {
+  if (!hours || !Array.isArray(hours.periods) || !hours.periods.length) return null;
+  // a single open period with no close means "open 24 hours"
+  if (hours.periods.some(p => p.open && !p.close)) return { open: true, label: 'Open 24 hours' };
+  const off = (typeof hours.utcOffset === 'number') ? hours.utcOffset : -new Date().getTimezoneOffset();
+  const d = new Date(Date.now() + off * 60000); // read the place's wall clock via UTC getters
+  const today = d.getUTCDay();
+  const cur = today * 1440 + d.getUTCHours() * 60 + d.getUTCMinutes();
+  const WEEK = 7 * 1440;
+  for (const p of hours.periods) {
+    if (!p.open || !p.close) continue;
+    const o = p.open.day * 1440 + (p.open.hour || 0) * 60 + (p.open.minute || 0);
+    let c = p.close.day * 1440 + (p.close.hour || 0) * 60 + (p.close.minute || 0);
+    if (c <= o) c += WEEK; // wraps past midnight / the week boundary
+    if ((cur >= o && cur < c) || (cur + WEEK >= o && cur + WEEK < c)) {
+      return { open: true, label: 'Open', detail: 'until ' + fmtClock(p.close.hour || 0, p.close.minute || 0) };
+    }
+  }
+  // closed — surface the soonest upcoming opening
+  let best = Infinity, nextOpen = null;
+  for (const p of hours.periods) {
+    if (!p.open) continue;
+    const o = p.open.day * 1440 + (p.open.hour || 0) * 60 + (p.open.minute || 0);
+    let delta = o - cur; if (delta < 0) delta += WEEK;
+    if (delta < best) { best = delta; nextOpen = p.open; }
+  }
+  const detail = nextOpen
+    ? 'opens ' + fmtClock(nextOpen.hour || 0, nextOpen.minute || 0) + (nextOpen.day !== today ? ' ' + DOW_SHORT[nextOpen.day] : '')
+    : null;
+  return { open: false, label: 'Closed', detail };
+}
+
+function OpenBadge({ hours, showDetail = true }) {
+  const st = openStatus(hours);
+  if (!st) return null;
+  const col = st.open ? T().green : T().ink3;
+  return (
+    <span style={{ display:'inline-flex', alignItems:'baseline', gap:6 }}>
+      <span style={{ display:'inline-flex', alignItems:'center', gap:5 }}>
+        <span style={{ width:7, height:7, borderRadius:'50%', background:col, display:'inline-block', flexShrink:0 }} />
+        <span className="kl" style={{ color:col }}>{st.label}</span>
+      </span>
+      {showDetail && st.detail ? <span className="sans" style={{ fontSize:11.5, color:'var(--ink-3)' }}>{st.detail}</span> : null}
+    </span>
+  );
+}
+
+function HoursList({ hours }) {
+  if (!hours || !Array.isArray(hours.weekdayDescriptions) || !hours.weekdayDescriptions.length) return null;
+  const todayName = DOW_LONG[new Date().getDay()];
+  return (
+    <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:3 }}>
+      {hours.weekdayDescriptions.map((line, i) => {
+        const sep = line.indexOf(': ');
+        const day = sep > 0 ? line.slice(0, sep) : line;
+        const time = sep > 0 ? line.slice(sep + 2) : '';
+        const on = day.indexOf(todayName) === 0;
+        const col = on ? 'var(--ink)' : 'var(--ink-3)';
+        const fw = on ? 600 : 400;
+        return (
+          <div key={i} style={{ display:'flex', justifyContent:'space-between', gap:12 }}>
+            <span className="sans" style={{ fontSize:12.5, color:col, fontWeight:fw }}>{day}</span>
+            <span className="sans" style={{ fontSize:12.5, color:col, fontWeight:fw, textAlign:'right' }}>{time}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function hasHours(hours) {
+  return !!(openStatus(hours) || (hours && Array.isArray(hours.weekdayDescriptions) && hours.weekdayDescriptions.length));
+}
+
 Object.assign(window, {
   Rule, KLabel, CuisineDot, StatusDot, StatusTag, PriceLevel,
   AgainTag, Meter, ScoreGrid, OverallBadge, Radar, Tag,
   scoreTier, calcWeighted, WeightStrip, AXIS_WEIGHTS, AXIS_ORDER, setGlobalWeights,
+  openStatus, OpenBadge, HoursList, hasHours,
 });
 
 </script>
@@ -1170,6 +1257,16 @@ function AppDetail({ place: p, onBack, onEdit, onReview, onDelete, avgScores, on
               </div>
             )}
           </div>
+
+          {window.hasHours(p.hours) ? (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+                <window.KLabel>Hours · Google</window.KLabel>
+                <window.OpenBadge hours={p.hours} />
+              </div>
+              <window.HoursList hours={p.hours} />
+            </div>
+          ) : null}
 
           {p.dish ? (
             <div style={{ background: 'var(--spot-soft)', borderRadius: 14, padding: '13px 15px', marginBottom: 16 }}>
@@ -1739,6 +1836,7 @@ function rowToPlace(r) {
     lat: r.lat == null ? null : Number(r.lat), lng: r.lng == null ? null : Number(r.lng),
     spent: r.spent == null ? null : Number(r.spent), people: r.people == null ? null : Number(r.people),
     weights: r.weights || null,
+    hours: r.hours || null,
     fav: !!r.fav,
     photos: r.photos || [], createdAt: r.created_at,
   };
@@ -1756,6 +1854,7 @@ function placeToRow(p, uid) {
     lat: p.lat == null ? null : p.lat, lng: p.lng == null ? null : p.lng,
     spent: p.spent == null ? null : p.spent, people: p.people == null ? null : p.people,
     weights: p.weights || null,
+    hours: p.hours || null,
     fav: !!p.fav,
     photos: p.photos || [],
   };
@@ -2469,7 +2568,7 @@ async function gDetails(placeId) {
   const res = await fetch('https://places.googleapis.com/v1/places/' + placeId, {
     headers: {
       'X-Goog-Api-Key': window.GMAPS_KEY,
-      'X-Goog-FieldMask': 'id,displayName,formattedAddress,addressComponents,types,priceLevel,photos,location',
+      'X-Goog-FieldMask': 'id,displayName,formattedAddress,addressComponents,types,priceLevel,photos,location,regularOpeningHours,utcOffsetMinutes',
     },
   });
   if (!res.ok) {
@@ -2496,6 +2595,14 @@ async function gDetails(placeId) {
     lng: (d.location && d.location.longitude != null) ? d.location.longitude : null,
     photos: [],
   };
+  const oh = d.regularOpeningHours;
+  if (oh && ((oh.periods && oh.periods.length) || (oh.weekdayDescriptions && oh.weekdayDescriptions.length))) {
+    prefill.hours = {
+      periods: oh.periods || [],
+      weekdayDescriptions: oh.weekdayDescriptions || [],
+      utcOffset: (d.utcOffsetMinutes != null) ? d.utcOffsetMinutes : null,
+    };
+  }
   if (d.photos && d.photos[0] && d.photos[0].name) {
     prefill.photos = [await gPhotoDataUrl(d.photos[0].name)];
   }
@@ -2992,6 +3099,7 @@ const social = {
       status: p.status === 'want' ? 'want' : 'visited', price: p.price, date: p.date || null,
       dish: p.dish, note: p.note, tags: p.tags || [],
       lat: p.lat == null ? null : p.lat, lng: p.lng == null ? null : p.lng,
+      hours: p.hours || null,
       photos,
     }).select().single();
     if (error) throw error;
@@ -3040,6 +3148,7 @@ const social = {
         id: sp.id, kind: 'shared', tableId: sp.table_id, tableName: tName[sp.table_id] || 'List',
         name: sp.name, cuisine: sp.cuisine || 'Italian', hood: sp.hood || '', price: sp.price || 2,
         lat: Number(sp.lat), lng: Number(sp.lng), photos: sp.photos || [],
+        hours: sp.hours || null,
         overall, again: n ? (yes > no ? true : (no > yes ? false : null)) : null,
         fav: favIds.has(sp.id),
       };
@@ -3135,6 +3244,7 @@ function useSharedTable(tableId, user) {
           dish: sp.dish || '', note: sp.note || '', tags: sp.tags || [],
           meal: [], occasion: [], photos: sp.photos || [],
           lat: sp.lat == null ? null : Number(sp.lat), lng: sp.lng == null ? null : Number(sp.lng),
+          hours: sp.hours || null,
           createdBy: sp.created_by, baseStatus: sp.status,
           status: n ? 'reviewed' : sp.status,
           overall,
@@ -3185,6 +3295,7 @@ function useSharedTable(tableId, user) {
         status: d.status === 'visited' ? 'visited' : 'want', price: d.price, date: d.date || null,
         dish: d.dish, note: d.note, tags: d.tags || [], photos,
         lat: d.lat == null ? null : d.lat, lng: d.lng == null ? null : d.lng,
+        hours: d.hours || null,
       });
       if (error) throw error;
     }),
@@ -3195,6 +3306,7 @@ function useSharedTable(tableId, user) {
         status: d.status === 'visited' ? 'visited' : 'want', price: d.price, date: d.date || null,
         dish: d.dish, note: d.note, tags: d.tags || [], photos,
         lat: d.lat == null ? null : d.lat, lng: d.lng == null ? null : d.lng,
+        hours: d.hours || null,
       }).eq('id', id);
       if (error) throw error;
     }),
@@ -3622,6 +3734,16 @@ function SharedDetail({ p, onBack, onEdit, onVerdict, onVisited, onAddToMine, on
               </span>
             </div>
           )}
+
+          {window.hasHours(p.hours) ? (
+            <div style={{ margin: '16px 0 0' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+                <window.KLabel>Hours · Google</window.KLabel>
+                <window.OpenBadge hours={p.hours} />
+              </div>
+              <window.HoursList hours={p.hours} />
+            </div>
+          ) : null}
 
           {p.dish ? (
             <div style={{ background: 'var(--spot-soft)', borderRadius: 14, padding: '12px 15px', margin: '16px 0 0' }}>
@@ -4723,6 +4845,9 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
                   <span className="num" style={{ fontSize: 12, color: 'var(--ink-2)' }}>{'$'.repeat(c.price || 0)}</span>
                   {c.again === true && <span className="kl" style={{ color: 'var(--green)' }}>Go again</span>}
                 </div>
+                {window.openStatus(c.hours) ? (
+                  <div style={{ marginTop: 5 }}><window.OpenBadge hours={c.hours} /></div>
+                ) : null}
               </div>
               {groups.length > 1 && (
                 <button onClick={nextNearby} aria-label="Next nearby place" style={{ flexShrink: 0, width: 40, alignSelf: 'stretch', background: 'var(--paper-2)', border: 'none', borderLeft: '1px solid var(--line)', cursor: 'pointer', color: 'var(--ink-2)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1, padding: 0 }}>
