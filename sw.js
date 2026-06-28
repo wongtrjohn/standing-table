@@ -1,7 +1,7 @@
-// sw.js — The Standing Table service worker (v9)
+// sw.js — The Standing Table service worker (v10)
 // Own files: network-first. Static CDNs only: cache-first.
 // API calls (Supabase or anything else): NEVER touched — straight to the network.
-const CACHE = 'standing-table-v9';
+const CACHE = 'standing-table-v10';
 
 // only these hosts are safe to cache-first (version-pinned static assets)
 const STATIC_HOSTS = ['unpkg.com', 'cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
