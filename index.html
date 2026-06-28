@@ -2339,7 +2339,7 @@ function GlobalWeightsCard({ profile, onSaveProfile }) {
 }
 
 // ── account + data settings ───────────────────────────────────────────────
-function AppSettingsCloud({ places, userEmail, profile, onSaveProfile, onClose, onImport, onLoadSamples, onClearSamples, onRepairPhotos, onSignOut, hideBack, onStartTour }) {
+function AppSettingsCloud({ places, userEmail, profile, onSaveProfile, onClose, onImport, onLoadSamples, onClearSamples, onRepairPhotos, onRepairHours, onSignOut, hideBack, onStartTour }) {
   const importRef = React.useRef(null);
   const csvRef = React.useRef(null);
   const [msg, setMsg] = React.useState(null);
@@ -2448,6 +2448,21 @@ function AppSettingsCloud({ places, userEmail, profile, onSaveProfile, onClose, 
           }} style={{ ...row, opacity: busy ? 0.6 : 1 }}>
             <span className="kl" style={{ color: 'var(--ink)' }}>Restore missing photos</span>
             <span className="sans" style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Re-fetches a Google photo for every place — in your journal and your shared lists — whose picture is missing or broken. Uses each place's saved name and address.</span>
+          </button>
+        )}
+
+        {onRepairHours && window.GMAPS_KEY && (
+          <button onClick={async () => {
+            if (busy) return;
+            setBusy(true); setMsg('Scanning for missing hours…');
+            try {
+              const r = await onRepairHours((done, total, fixed) => setMsg('Fetching hours… ' + done + ' / ' + total + ' checked · ' + fixed + ' updated'));
+              setMsg(r.scanned === 0 ? 'No places missing hours — everything is up to date.' : ('Added hours to ' + r.fixed + ' of ' + r.scanned + ' places that were missing them.'));
+            } catch (e) { setMsg('Failed: ' + e.message); }
+            setBusy(false);
+          }} style={{ ...row, opacity: busy ? 0.6 : 1 }}>
+            <span className="kl" style={{ color: 'var(--ink)' }}>Fetch missing opening hours</span>
+            <span className="sans" style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Looks up opening hours from Google for every place — in your journal and your shared lists — that doesn't have them yet. Useful for places added before hours were supported. Uses each place's saved name and address.</span>
           </button>
         )}
 
@@ -2822,14 +2837,15 @@ function cuisineFromCategory(cat) {
 }
 
 // Places API (New) Text Search — best single match for "name, address".
-async function gTextSearch(query, wantPhoto) {
+async function gTextSearch(query, wantPhoto, wantHours) {
   const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': window.GMAPS_KEY,
       'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.addressComponents,places.types,places.priceLevel,places.location'
-        + (wantPhoto ? ',places.photos' : ''),
+        + (wantPhoto ? ',places.photos' : '')
+        + (wantHours ? ',places.regularOpeningHours,places.utcOffsetMinutes' : ''),
     },
     body: JSON.stringify({ textQuery: query, maxResultCount: 1 }),
   });
@@ -2842,7 +2858,7 @@ async function gTextSearch(query, wantPhoto) {
 }
 
 // A Google place object → the app's prefill shape (same mapping as gDetails).
-async function gPlaceToPrefill(d, wantPhoto) {
+async function gPlaceToPrefill(d, wantPhoto, wantHours) {
   const comp = (type) => {
     const c = (d.addressComponents || []).find(c => (c.types || []).includes(type));
     return c ? (c.longText || c.shortText) : null;
@@ -2860,6 +2876,16 @@ async function gPlaceToPrefill(d, wantPhoto) {
     lng: (d.location && d.location.longitude != null) ? d.location.longitude : null,
     photos: [],
   };
+  if (wantHours) {
+    const oh = d.regularOpeningHours;
+    if (oh && ((oh.periods && oh.periods.length) || (oh.weekdayDescriptions && oh.weekdayDescriptions.length))) {
+      prefill.hours = {
+        periods: oh.periods || [],
+        weekdayDescriptions: oh.weekdayDescriptions || [],
+        utcOffset: (d.utcOffsetMinutes != null) ? d.utcOffsetMinutes : null,
+      };
+    }
+  }
   if (wantPhoto && d.photos && d.photos[0] && d.photos[0].name) {
     prefill.photos = [await gPhotoDataUrl(d.photos[0].name)];
   }
@@ -2918,7 +2944,7 @@ async function csvRowsToPlaces(rows, opts) {
   return { places: out, matched, total: out.length };
 }
 
-Object.assign(window, { LiveSearch, parseCSV, csvRowsToPlaces });
+Object.assign(window, { LiveSearch, parseCSV, csvRowsToPlaces, gTextSearch, gPlaceToPrefill });
 
 </script>
 <script type="text/babel">
@@ -4942,11 +4968,53 @@ function AccountTab({ user, col, profile, setProfile, onStartTour }) {
     return { fixed, scanned };
   };
 
+  // Backfill opening hours for places saved before the hours feature (or any
+  // that never matched). Re-finds each place on Google by name + address.
+  const repairHours = async (onProgress) => {
+    const needs = (p) => !window.hasHours(p.hours) && p.name;
+    const journalVictims = (col.places || []).filter(needs);
+    let sharedVictims = [];
+    try {
+      const tQ = await window.sb.from('shared_table_members').select('table_id').eq('user_id', user.id);
+      const tids = (tQ.data || []).map(r => r.table_id);
+      if (tids.length) {
+        const sQ = await window.sb.from('shared_places').select('id,name,address,hood,hours').in('table_id', tids);
+        sharedVictims = (sQ.data || []).filter(needs);
+      }
+    } catch (e) { /* tables unreachable — backfill the journal at least */ }
+
+    const scanned = journalVictims.length + sharedVictims.length;
+    let fixed = 0, done = 0;
+
+    const lookup = async (p) => {
+      const q = [p.name, p.address || p.hood || ''].filter(Boolean).join(', ');
+      if (!q) return null;
+      const g = await window.gTextSearch(q, false, true);
+      if (!g) return null;
+      const pf = await window.gPlaceToPrefill(g, false, true);
+      return pf.hours || null;
+    };
+
+    for (const p of journalVictims) {
+      try { const hours = await lookup(p); if (hours) { col.updatePlace(p.id, { hours }); fixed++; } } catch (e) {}
+      done++; onProgress && onProgress(done, scanned, fixed);
+    }
+    for (const p of sharedVictims) {
+      try {
+        const hours = await lookup(p);
+        if (hours) { const { error } = await window.sb.from('shared_places').update({ hours }).eq('id', p.id); if (!error) fixed++; }
+      } catch (e) {}
+      done++; onProgress && onProgress(done, scanned, fixed);
+    }
+    return { fixed, scanned };
+  };
+
   return (
     <window.AppSettingsCloud
       hideBack
       onStartTour={onStartTour}
       onRepairPhotos={repairPhotos}
+      onRepairHours={repairHours}
       places={col.places}
       userEmail={user.email}
       profile={profile}
