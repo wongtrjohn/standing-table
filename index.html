@@ -5021,8 +5021,10 @@ function AccountTab({ user, col, profile, setProfile, onStartTour }) {
         const dataUrls = await lookup(p);
         if (dataUrls) {
           const photos = await window.cloudUploadPhotos(user.id, dataUrls);
-          const { error } = await window.sb.from('shared_places').update({ photos }).eq('id', p.id);
-          if (!error) fixed++;
+          // .select() returns the rows actually updated — under RLS a blocked
+          // update succeeds with 0 rows, so only count it when a row changed.
+          const { data: upd, error } = await window.sb.from('shared_places').update({ photos }).eq('id', p.id).select('id');
+          if (!error && upd && upd.length) fixed++;
         }
       } catch (e) {}
       done++; onProgress && onProgress(done, scanned, fixed);
@@ -5064,7 +5066,10 @@ function AccountTab({ user, col, profile, setProfile, onStartTour }) {
     for (const p of sharedVictims) {
       try {
         const hours = await lookup(p);
-        if (hours) { const { error } = await window.sb.from('shared_places').update({ hours }).eq('id', p.id); if (!error) fixed++; }
+        if (hours) {
+          const { data: upd, error } = await window.sb.from('shared_places').update({ hours }).eq('id', p.id).select('id');
+          if (!error && upd && upd.length) fixed++;
+        }
       } catch (e) {}
       done++; onProgress && onProgress(done, scanned, fixed);
     }
