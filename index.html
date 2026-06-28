@@ -4986,21 +4986,40 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
 }
 
 function AccountTab({ user, col, profile, setProfile, onStartTour }) {
+  // does an image URL actually load? (catches dead storage objects whose URL
+  // still looks valid — a string check alone would wrongly call them fine)
+  const imgLoads = (url) => new Promise((resolve) => {
+    if (!url) return resolve(false);
+    const img = new Image();
+    let settled = false;
+    const done = (ok) => { if (!settled) { settled = true; resolve(ok); } };
+    img.onload = () => done(img.naturalWidth > 0);
+    img.onerror = () => done(false);
+    img.src = url;
+    setTimeout(() => done(false), 8000);
+  });
+
   // re-fetch a Google photo for every place (journal + shared lists) whose
-  // photo is missing, or points at a dead Google URL from a rotated API key
+  // photo is missing, a Google hotlink, or no longer loads (dead storage file)
   const repairPhotos = async (onProgress) => {
-    const broken = (p) => {
+    const broken = async (p) => {
       const ph = (p.photos || [])[0];
-      return !ph || String(ph).indexOf('places.googleapis.com') !== -1;
+      if (!ph) return true;
+      if (String(ph).indexOf('googleapis.com') !== -1) return true; // hotlink — localize it
+      return !(await imgLoads(ph)); // valid-looking URL, but does it actually load?
     };
-    const journalVictims = (col.places || []).filter(p => broken(p) && p.name);
+    const flagBroken = async (cands) => {
+      const flags = await Promise.all(cands.map(broken));
+      return cands.filter((p, i) => flags[i]);
+    };
+    const journalVictims = await flagBroken((col.places || []).filter(p => p.name));
     let sharedVictims = [];
     try {
       const tQ = await window.sb.from('shared_table_members').select('table_id').eq('user_id', user.id);
       const tids = (tQ.data || []).map(r => r.table_id);
       if (tids.length) {
         const sQ = await window.sb.from('shared_places').select('id,name,address,hood,photos').in('table_id', tids);
-        sharedVictims = (sQ.data || []).filter(p => broken(p) && p.name);
+        sharedVictims = await flagBroken((sQ.data || []).filter(p => p.name));
       }
     } catch (e) { /* tables unreachable — repair the journal at least */ }
 
