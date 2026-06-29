@@ -2550,10 +2550,14 @@ const G_PRICE_MAP = {
 
 // ── API calls ─────────────────────────────────────────────────────────────
 async function gAutocomplete(input) {
+  // No includedPrimaryTypes: Google's "primary type" excludes many eateries
+  // (ice-cream shops, fine-dining, pubs, food courts, places tagged as a
+  // tourist attraction, etc.), so restricting it hid valid restaurants. We let
+  // everything through here and lean on the Text Search fallback below.
   const res = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': window.GMAPS_KEY },
-    body: JSON.stringify({ input, includedPrimaryTypes: ['restaurant', 'cafe', 'bar', 'bakery', 'meal_takeaway'] }),
+    body: JSON.stringify({ input }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -2567,6 +2571,30 @@ async function gAutocomplete(input) {
       name: (p.structuredFormat && p.structuredFormat.mainText && p.structuredFormat.mainText.text) || (p.text && p.text.text) || '',
       address: (p.structuredFormat && p.structuredFormat.secondaryText && p.structuredFormat.secondaryText.text) || '',
     }));
+}
+
+// Text Search fallback — the same engine the CSV importer uses, which finds
+// places autocomplete misses. Returns the same shape as gAutocomplete.
+async function gTextSearchPredictions(query) {
+  const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': window.GMAPS_KEY,
+      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress',
+    },
+    body: JSON.stringify({ textQuery: query, maxResultCount: 8 }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body.error && body.error.message) || ('Search failed (' + res.status + ')'));
+  }
+  const data = await res.json();
+  return (data.places || []).map(p => ({
+    placeId: p.id,
+    name: (p.displayName && p.displayName.text) || '',
+    address: p.formattedAddress || '',
+  }));
 }
 
 async function gPhotoDataUrl(photoName) {
@@ -2658,9 +2686,14 @@ function LiveSearch({ onPick, onManual, onClose }) {
       const mySeq = ++seq.current;
       setState('searching');
       try {
-        const r = await gAutocomplete(q.trim());
+        let r = await gAutocomplete(q.trim());
+        // Autocomplete missed it? Fall back to full Text Search (finds the
+        // places CSV import can but typeahead can't).
+        if (!r.length) {
+          try { r = await gTextSearchPredictions(q.trim()); } catch (e2) { /* keep autocomplete's empty result */ }
+        }
         if (seq.current !== mySeq) return; // stale response
-        setResults(r.slice(0, 5));
+        setResults(r.slice(0, 6));
         setState('idle');
       } catch (e) {
         if (seq.current !== mySeq) return;
