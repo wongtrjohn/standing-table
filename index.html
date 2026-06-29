@@ -4325,10 +4325,17 @@ function JournalSpace({ user, col, switcher, onSettings, onChrome, org, listFilt
 }
 
 // ── a shared list: group list + verdicts ─────────────────────────────────
-function TableSpace({ user, tableId, switcher, onSettings, onChrome, col, org }) {
+function TableSpace({ user, tableId, switcher, onSettings, onChrome, col, org, openPlaceId, onConsumedPlace }) {
   const tbl = window.useSharedTable(tableId, user);
-  const [view, setView] = React.useState({ screen: 'pipeline', placeId: null, prefill: null });
+  const [view, setView] = React.useState(() => openPlaceId
+    ? { screen: 'detail', placeId: openPlaceId, prefill: null }
+    : { screen: 'pipeline', placeId: null, prefill: null });
   const go = (screen, extra) => setView({ screen, placeId: null, prefill: null, ...(extra || {}) });
+
+  // deep-link from the map's "Go to Review": open this place's detail
+  React.useEffect(() => {
+    if (openPlaceId) { setView({ screen: 'detail', placeId: openPlaceId, prefill: null }); onConsumedPlace && onConsumedPlace(); }
+  }, [openPlaceId]);
 
   // Copy a shared-table place into my private journal. Uses MY verdict (not the
   // table average) when I've reviewed it; otherwise it lands as "want to try".
@@ -4566,11 +4573,19 @@ function TablesHome({ uid, lists, tables, freshIds, onOpen, onManage, onOpenList
   );
 }
 
-function TablesTab({ user, col, tables, lists, org, refreshTables, onChrome, onOpenAccount, openTableId, onConsumedTable, freshIds, onSeen }) {
+function TablesTab({ user, col, tables, lists, org, refreshTables, onChrome, onOpenAccount, openTableId, onConsumedTable, openTablePlaceId, onConsumedTablePlace, freshIds, onSeen }) {
   const [space, setSpace] = React.useState(null);
+  const [spacePlace, setSpacePlace] = React.useState(null); // deep-link to a place inside the table
   const [listId, setListId] = React.useState(null);
   const [sheet, setSheet] = React.useState(false);
-  React.useEffect(() => { if (openTableId) { setSpace(openTableId); onConsumedTable && onConsumedTable(); } }, [openTableId]);
+  React.useEffect(() => {
+    if (openTableId) {
+      setSpace(openTableId);
+      setSpacePlace(openTablePlaceId || null);
+      onConsumedTable && onConsumedTable();
+      onConsumedTablePlace && onConsumedTablePlace();
+    }
+  }, [openTableId]);
   // mark a table seen when opening it, and again when leaving it
   // (so your own additions while inside don't show up as "new" later)
   const prevSpace = React.useRef(null);
@@ -4606,6 +4621,7 @@ function TablesTab({ user, col, tables, lists, org, refreshTables, onChrome, onO
   if (space) {
     return (
       <TableSpace key={space} user={user} tableId={space} col={col} org={org} onChrome={onChrome} onSettings={onOpenAccount}
+        openPlaceId={spacePlace} onConsumedPlace={() => setSpacePlace(null)}
         switcher={
           <div style={{ padding: '0 20px 10px', flexShrink: 0 }}>
             <button onClick={() => { setSpace(null); onChrome && onChrome(true); }} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-2)', padding: '2px 0' }}>‹ All lists</button>
@@ -4950,7 +4966,7 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
             <div style={{ display: 'flex', gap: 6, padding: '0 12px 12px' }}>
               <button onClick={() => window.open('https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(c.name + (c.hood ? ' ' + c.hood : '')), '_blank')} className="kl" style={{ flex: 1, background: 'transparent', color: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 10, padding: '9px 5px', cursor: 'pointer' }}>Google Maps</button>
               <button onClick={() => jumpNearby(Number(c.lat), Number(c.lng))} className="kl" style={{ flex: 1, background: 'transparent', color: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: 10, padding: '9px 5px', cursor: 'pointer' }}>Jump Nearby</button>
-              <button onClick={() => c.kind === 'shared' ? (onOpenTable && onOpenTable(c.tableId)) : (onOpenPlace && onOpenPlace(c.id))} className="kl" style={{ flex: 1, background: 'var(--ink)', color: 'var(--paper)', border: 'none', borderRadius: 10, padding: '9px 5px', cursor: 'pointer' }}>Go to Review</button>
+              <button onClick={() => c.kind === 'shared' ? (onOpenTable && onOpenTable(c.tableId, c.id)) : (onOpenPlace && onOpenPlace(c.id))} className="kl" style={{ flex: 1, background: 'var(--ink)', color: 'var(--paper)', border: 'none', borderRadius: 10, padding: '9px 5px', cursor: 'pointer' }}>Go to Review</button>
             </div>
           </div>
         )}
@@ -5257,6 +5273,7 @@ function SignedApp({ user }) {
   const [chrome, setChrome] = React.useState(true);
   const [pendingPlace, setPendingPlace] = React.useState(null);
   const [pendingTable, setPendingTable] = React.useState(null);
+  const [pendingTablePlace, setPendingTablePlace] = React.useState(null); // open this place inside the table
   const [pendingLog, setPendingLog] = React.useState(false);
   const [tour, setTour] = React.useState(null);
   const [pill, setPill] = React.useState(false);
@@ -5324,7 +5341,7 @@ function SignedApp({ user }) {
 
   const selectTab = (t) => { setChrome(true); setTab(t); };
   const openPlace = (id) => { setChrome(true); setPendingPlace(id); setTab('overview'); };
-  const openTable = (id) => { setChrome(true); setPendingTable(id); setTab('tables'); };
+  const openTable = (id, placeId) => { setChrome(true); setPendingTable(id); setPendingTablePlace(placeId || null); setTab('tables'); };
   const startTour = () => { setChrome(true); setTab('overview'); setTour(0); };
   const endTour = () => { setTour(null); setPill(false); try { localStorage.setItem('st7-tour-seen', '1'); } catch (e) {} };
   // seed sample places first so the tour has something to point at
@@ -5369,7 +5386,7 @@ function SignedApp({ user }) {
   if (tab === 'overview') {
     body = <JournalSpace user={user} col={col} switcher={null} org={org} onChrome={setChrome} onSettings={() => selectTab('account')} openId={pendingPlace} onConsumed={() => setPendingPlace(null)} openLog={pendingLog} onConsumedLog={() => setPendingLog(false)} onTour={startTour} />;
   } else if (tab === 'tables') {
-    body = <TablesTab user={user} col={col} tables={tables} lists={lists} org={org} refreshTables={refreshTables} onChrome={setChrome} onOpenAccount={() => selectTab('account')} openTableId={pendingTable} onConsumedTable={() => setPendingTable(null)} freshIds={fresh} onSeen={seenTable} />;
+    body = <TablesTab user={user} col={col} tables={tables} lists={lists} org={org} refreshTables={refreshTables} onChrome={setChrome} onOpenAccount={() => selectTab('account')} openTableId={pendingTable} onConsumedTable={() => setPendingTable(null)} openTablePlaceId={pendingTablePlace} onConsumedTablePlace={() => setPendingTablePlace(null)} freshIds={fresh} onSeen={seenTable} />;
   } else if (tab === 'map') {
     body = <MapTab user={user} places={col.places} lists={lists} tables={tables} onOpenPlace={openPlace} onOpenTable={openTable} />;
   } else {
