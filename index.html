@@ -687,11 +687,22 @@ function hasHours(hours) {
   return !!(openStatus(hours) || (hours && Array.isArray(hours.weekdayDescriptions) && hours.weekdayDescriptions.length));
 }
 
+// website helpers: normalise to a clickable URL, and a tidy label for display
+function normWebUrl(url) {
+  const u = String(url || '').trim();
+  if (!u) return '';
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(u) ? u : ('https://' + u);
+}
+function prettyWebUrl(url) {
+  let s = String(url || '').trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^www\./i, '').replace(/\/+$/, '');
+  return s.length > 38 ? s.slice(0, 37) + '…' : s;
+}
+
 Object.assign(window, {
   Rule, KLabel, CuisineDot, StatusDot, StatusTag, PriceLevel,
   AgainTag, Meter, ScoreGrid, OverallBadge, Radar, Tag,
   scoreTier, calcWeighted, WeightStrip, AXIS_WEIGHTS, AXIS_ORDER, setGlobalWeights,
-  openStatus, OpenBadge, HoursList, hasHours,
+  openStatus, OpenBadge, HoursList, hasHours, normWebUrl, prettyWebUrl,
 });
 
 </script>
@@ -1209,6 +1220,11 @@ function AppDetail({ place: p, onBack, onEdit, onReview, onDelete, avgScores, on
               <span className="sans" style={{ fontSize: 12, color: 'var(--ink-3)' }}>{p.address}</span>
             </div>
           ) : null}
+          {p.website ? (
+            <a href={window.normWebUrl(p.website)} target="_blank" rel="noopener noreferrer" className="kl" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 7, color: 'var(--spot)', textDecoration: 'none' }}>
+              <span>↗</span> {window.prettyWebUrl(p.website)}
+            </a>
+          ) : null}
 
           {p.s ? (
             <div style={{ margin: '18px 0', paddingBottom: 18, borderBottom: '1px solid var(--line)' }}>
@@ -1583,7 +1599,7 @@ function AppForm({ place, forceStatus, prefill, onSave, onCancel }) {
   const [d, setD] = React.useState(() => ({
     name: '', address: '', cuisine: 'Italian', hood: '', price: 2,
     status: 'want', date: null, meal: ['Dinner'], occasion: [],
-    tags: [], dish: '', note: '', photos: [],
+    tags: [], dish: '', note: '', photos: [], website: '',
     s: { food: 8, value: 7, vibe: 8, service: 7 }, again: true, overall: null,
     spent: null, people: null, weights: null,
     ...(prefill || {}),
@@ -1654,6 +1670,10 @@ function AppForm({ place, forceStatus, prefill, onSave, onCancel }) {
 
         <AFField label="Address (optional) · input to use Map view">
           <AFInput value={d.address || ''} onChange={e => set({ address: e.target.value })} placeholder="Street address" />
+        </AFField>
+
+        <AFField label="Website (optional)">
+          <AFInput type="url" inputMode="url" value={d.website || ''} onChange={e => set({ website: e.target.value })} placeholder="https://…" />
         </AFField>
 
         <AFField label="Status">
@@ -1838,6 +1858,7 @@ function rowToPlace(r) {
     spent: r.spent == null ? null : Number(r.spent), people: r.people == null ? null : Number(r.people),
     weights: r.weights || null,
     hours: r.hours || null,
+    website: r.website || null,
     fav: !!r.fav,
     photos: r.photos || [], createdAt: r.created_at,
   };
@@ -1856,6 +1877,7 @@ function placeToRow(p, uid) {
     spent: p.spent == null ? null : p.spent, people: p.people == null ? null : p.people,
     weights: p.weights || null,
     hours: p.hours || null,
+    website: p.website || null,
     fav: !!p.fav,
     photos: p.photos || [],
   };
@@ -2340,7 +2362,7 @@ function GlobalWeightsCard({ profile, onSaveProfile }) {
 }
 
 // ── account + data settings ───────────────────────────────────────────────
-function AppSettingsCloud({ places, userEmail, profile, onSaveProfile, onClose, onImport, onLoadSamples, onClearSamples, onRepairPhotos, onRepairHours, onSignOut, hideBack, onStartTour }) {
+function AppSettingsCloud({ places, userEmail, profile, onSaveProfile, onClose, onImport, onLoadSamples, onClearSamples, onRepairPhotos, onRepairHours, onRepairWebsites, onSignOut, hideBack, onStartTour }) {
   const importRef = React.useRef(null);
   const csvRef = React.useRef(null);
   const [msg, setMsg] = React.useState(null);
@@ -2471,6 +2493,21 @@ function AppSettingsCloud({ places, userEmail, profile, onSaveProfile, onClose, 
           }} style={{ ...row, opacity: busy ? 0.6 : 1 }}>
             <span className="kl" style={{ color: 'var(--ink)' }}>Fetch missing opening hours</span>
             <span className="sans" style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Looks up opening hours from Google for every place — in your journal and your shared lists — that doesn't have them yet. Useful for places added before hours were supported. Uses each place's saved name and address.</span>
+          </button>
+        )}
+
+        {onRepairWebsites && window.GMAPS_KEY && (
+          <button onClick={async () => {
+            if (busy) return;
+            setBusy(true); setMsg('Scanning for missing websites…');
+            try {
+              const r = await onRepairWebsites((done, total, fixed) => setMsg('Fetching websites… ' + done + ' / ' + total + ' checked · ' + fixed + ' updated'));
+              setMsg(r.scanned === 0 ? 'No places missing a website — everything is up to date.' : ('Added a website to ' + r.fixed + ' of ' + r.scanned + ' places that were missing one.'));
+            } catch (e) { setMsg('Failed: ' + e.message); }
+            setBusy(false);
+          }} style={{ ...row, opacity: busy ? 0.6 : 1 }}>
+            <span className="kl" style={{ color: 'var(--ink)' }}>Fetch missing websites</span>
+            <span className="sans" style={{ fontSize: 12.5, color: 'var(--ink-3)' }}>Looks up the website link from Google for every place — in your journal and your shared lists — that doesn't have one yet. Useful for places added before links were supported. Uses each place's saved name and address.</span>
           </button>
         )}
 
@@ -2620,7 +2657,7 @@ async function gDetails(placeId) {
   const res = await fetch('https://places.googleapis.com/v1/places/' + placeId, {
     headers: {
       'X-Goog-Api-Key': window.GMAPS_KEY,
-      'X-Goog-FieldMask': 'id,displayName,formattedAddress,addressComponents,types,priceLevel,photos,location,regularOpeningHours,utcOffsetMinutes',
+      'X-Goog-FieldMask': 'id,displayName,formattedAddress,addressComponents,types,priceLevel,photos,location,regularOpeningHours,utcOffsetMinutes,websiteUri',
     },
   });
   if (!res.ok) {
@@ -2655,6 +2692,7 @@ async function gDetails(placeId) {
       utcOffset: (d.utcOffsetMinutes != null) ? d.utcOffsetMinutes : null,
     };
   }
+  if (d.websiteUri) prefill.website = d.websiteUri;
   if (d.photos && d.photos[0] && d.photos[0].name) {
     prefill.photos = [await gPhotoDataUrl(d.photos[0].name)];
   }
@@ -2879,7 +2917,7 @@ function cuisineFromCategory(cat) {
 }
 
 // Places API (New) Text Search — best single match for "name, address".
-async function gTextSearch(query, wantPhoto, wantHours) {
+async function gTextSearch(query, wantPhoto, wantHours, wantWebsite) {
   const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
     method: 'POST',
     headers: {
@@ -2887,7 +2925,8 @@ async function gTextSearch(query, wantPhoto, wantHours) {
       'X-Goog-Api-Key': window.GMAPS_KEY,
       'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.addressComponents,places.types,places.priceLevel,places.location'
         + (wantPhoto ? ',places.photos' : '')
-        + (wantHours ? ',places.regularOpeningHours,places.utcOffsetMinutes' : ''),
+        + (wantHours ? ',places.regularOpeningHours,places.utcOffsetMinutes' : '')
+        + (wantWebsite ? ',places.websiteUri' : ''),
     },
     body: JSON.stringify({ textQuery: query, maxResultCount: 1 }),
   });
@@ -2900,7 +2939,7 @@ async function gTextSearch(query, wantPhoto, wantHours) {
 }
 
 // A Google place object → the app's prefill shape (same mapping as gDetails).
-async function gPlaceToPrefill(d, wantPhoto, wantHours) {
+async function gPlaceToPrefill(d, wantPhoto, wantHours, wantWebsite) {
   const comp = (type) => {
     const c = (d.addressComponents || []).find(c => (c.types || []).includes(type));
     return c ? (c.longText || c.shortText) : null;
@@ -2928,6 +2967,7 @@ async function gPlaceToPrefill(d, wantPhoto, wantHours) {
       };
     }
   }
+  if (wantWebsite && d.websiteUri) prefill.website = d.websiteUri;
   if (wantPhoto && d.photos && d.photos[0] && d.photos[0].name) {
     prefill.photos = [await gPhotoDataUrl(d.photos[0].name)];
   }
@@ -3167,7 +3207,7 @@ const social = {
       status: p.status === 'want' ? 'want' : 'visited', price: p.price, date: p.date || null,
       dish: p.dish, note: p.note, tags: p.tags || [],
       lat: p.lat == null ? null : p.lat, lng: p.lng == null ? null : p.lng,
-      hours: p.hours || null,
+      hours: p.hours || null, website: p.website || null,
       photos,
     }).select().single();
     if (error) throw error;
@@ -3313,7 +3353,7 @@ function useSharedTable(tableId, user) {
           dish: sp.dish || '', note: sp.note || '', tags: sp.tags || [],
           meal: [], occasion: [], photos: sp.photos || [],
           lat: sp.lat == null ? null : Number(sp.lat), lng: sp.lng == null ? null : Number(sp.lng),
-          hours: sp.hours || null,
+          hours: sp.hours || null, website: sp.website || null,
           createdBy: sp.created_by, baseStatus: sp.status,
           status: n ? 'reviewed' : sp.status,
           overall,
@@ -3364,7 +3404,7 @@ function useSharedTable(tableId, user) {
         status: d.status === 'visited' ? 'visited' : 'want', price: d.price, date: d.date || null,
         dish: d.dish, note: d.note, tags: d.tags || [], photos,
         lat: d.lat == null ? null : d.lat, lng: d.lng == null ? null : d.lng,
-        hours: d.hours || null,
+        hours: d.hours || null, website: d.website || null,
       });
       if (error) throw error;
     }),
@@ -3375,7 +3415,7 @@ function useSharedTable(tableId, user) {
         status: d.status === 'visited' ? 'visited' : 'want', price: d.price, date: d.date || null,
         dish: d.dish, note: d.note, tags: d.tags || [], photos,
         lat: d.lat == null ? null : d.lat, lng: d.lng == null ? null : d.lng,
-        hours: d.hours || null,
+        hours: d.hours || null, website: d.website || null,
       }).eq('id', id);
       if (error) throw error;
     }),
@@ -3750,6 +3790,11 @@ function SharedDetail({ p, onBack, onEdit, onVerdict, onVisited, onAddToMine, on
           <window.KLabel style={{ color: 'var(--spot)' }}>{p.cuisine}{p.hood ? ' · ' + p.hood : ''}</window.KLabel>
           <div className="serif" style={{ fontSize: 30, fontWeight: 580, color: 'var(--ink)', letterSpacing: '-0.015em', lineHeight: 1.05, marginTop: 5 }}>{p.name}</div>
           {p.address ? <div className="sans" style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 5 }}>{p.address}</div> : null}
+          {p.website ? (
+            <a href={window.normWebUrl(p.website)} target="_blank" rel="noopener noreferrer" className="kl" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 6, color: 'var(--spot)', textDecoration: 'none' }}>
+              <span>↗</span> {window.prettyWebUrl(p.website)}
+            </a>
+          ) : null}
           <div className="kl" style={{ marginTop: 7 }}>{p.byline}</div>
           {p.favCount > 0 && (
             <div className="kl" style={{ marginTop: 6, color: 'var(--spot)' }}>
@@ -3867,7 +3912,7 @@ function SharedPlaceForm({ place, prefill, onSave, onCancel }) {
   const cuisines = Object.keys(window.CUISINE_META);
   const [d, setD] = React.useState(() => ({
     name: '', cuisine: 'Italian', hood: '', address: '', price: 2,
-    status: 'want', date: null, dish: '', note: '', tags: [], photos: [],
+    status: 'want', date: null, dish: '', note: '', tags: [], photos: [], website: '',
     ...(prefill || {}), ...(place || {}),
   }));
   const [err, setErr] = React.useState(null);
@@ -3907,6 +3952,10 @@ function SharedPlaceForm({ place, prefill, onSave, onCancel }) {
 
         <window.AFField label="Address (optional)">
           <window.AFInput value={d.address || ''} onChange={e => set({ address: e.target.value })} placeholder="Street address" />
+        </window.AFField>
+
+        <window.AFField label="Website (optional)">
+          <window.AFInput type="url" inputMode="url" value={d.website || ''} onChange={e => set({ website: e.target.value })} placeholder="https://…" />
         </window.AFField>
 
         <window.AFField label="Price level">
@@ -4101,6 +4150,7 @@ function BatchAddSharedSheet({ places, org, col, onClose }) {
       price: sp.price || 2, dish: sp.dish || '', tags: sp.tags || [],
       meal: [], occasion: [], photos: sp.photos || [],
       lat: sp.lat == null ? null : sp.lat, lng: sp.lng == null ? null : sp.lng,
+      website: sp.website || null,
       status: mine ? 'reviewed' : 'want',
       s: mine ? (mine.s || null) : null,
       overall: (mine && mine.overall != null) ? Number(mine.overall) : null,
@@ -4383,6 +4433,7 @@ function TableSpace({ user, tableId, switcher, onSettings, onChrome, col, org, o
       price: sp.price || 2, dish: sp.dish || '', tags: sp.tags || [],
       meal: [], occasion: [], photos: sp.photos || [],
       lat: sp.lat == null ? null : sp.lat, lng: sp.lng == null ? null : sp.lng,
+      website: sp.website || null,
       status: mine ? 'reviewed' : 'want',
       s: mine ? (mine.s || null) : null,
       overall: (mine && mine.overall != null) ? Number(mine.overall) : null,
@@ -5197,12 +5248,56 @@ function AccountTab({ user, col, profile, setProfile, onStartTour }) {
     return { fixed, scanned };
   };
 
+  // Backfill the website link for places saved before websites were supported.
+  const repairWebsites = async (onProgress) => {
+    const needs = (p) => !p.website && p.name;
+    const journalVictims = (col.places || []).filter(needs);
+    let sharedVictims = [];
+    try {
+      const tQ = await window.sb.from('shared_table_members').select('table_id').eq('user_id', user.id);
+      const tids = (tQ.data || []).map(r => r.table_id);
+      if (tids.length) {
+        const sQ = await window.sb.from('shared_places').select('id,name,address,hood,website').in('table_id', tids);
+        sharedVictims = (sQ.data || []).filter(needs);
+      }
+    } catch (e) { /* tables unreachable — backfill the journal at least */ }
+
+    const scanned = journalVictims.length + sharedVictims.length;
+    let fixed = 0, done = 0;
+
+    const lookup = async (p) => {
+      const q = [p.name, p.address || p.hood || ''].filter(Boolean).join(', ');
+      if (!q) return null;
+      const g = await window.gTextSearch(q, false, false, true);
+      if (!g) return null;
+      const pf = await window.gPlaceToPrefill(g, false, false, true);
+      return pf.website || null;
+    };
+
+    for (const p of journalVictims) {
+      try { const website = await lookup(p); if (website) { col.updatePlace(p.id, { website }); fixed++; } } catch (e) {}
+      done++; onProgress && onProgress(done, scanned, fixed);
+    }
+    for (const p of sharedVictims) {
+      try {
+        const website = await lookup(p);
+        if (website) {
+          const { data: upd, error } = await window.sb.from('shared_places').update({ website }).eq('id', p.id).select('id');
+          if (!error && upd && upd.length) fixed++;
+        }
+      } catch (e) {}
+      done++; onProgress && onProgress(done, scanned, fixed);
+    }
+    return { fixed, scanned };
+  };
+
   return (
     <window.AppSettingsCloud
       hideBack
       onStartTour={onStartTour}
       onRepairPhotos={repairPhotos}
       onRepairHours={repairHours}
+      onRepairWebsites={repairWebsites}
       places={col.places}
       userEmail={user.email}
       profile={profile}
