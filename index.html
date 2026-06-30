@@ -4708,6 +4708,17 @@ const MAP_STYLE = [
 function flEsc(t) { return String(t == null ? '' : t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
 function flPinIcon(maps, p) {
+  // Rated place → show the score in the pin, coloured by verdict:
+  // green = would go again, red = pass, neutral = rated but no verdict yet.
+  if (p.overall != null) {
+    const fill = p.again === true ? '#3E6B4F' : (p.again === false ? '#C2451E' : '#5B544B');
+    const label = Number(p.overall).toFixed(1);
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="48" viewBox="0 0 40 48">'
+      + '<path d="M20 1.5C10 1.5 2.5 9 2.5 18.5 2.5 31 20 46.5 20 46.5S37.5 31 37.5 18.5C37.5 9 30 1.5 20 1.5z" fill="' + fill + '" stroke="#FAF7F0" stroke-width="2.5"/>'
+      + '<text x="20" y="23.5" text-anchor="middle" font-family="Helvetica Neue,Arial,sans-serif" font-size="13.5" font-weight="700" fill="#FFFFFF">' + label + '</text></svg>';
+    return { url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(svg), scaledSize: new maps.Size(40, 48), anchor: new maps.Point(20, 46) };
+  }
+  // Unrated place → keep the small cuisine-coloured dot pin.
   const color = (window.CUISINE_META[p.cuisine] && window.CUISINE_META[p.cuisine].dot) || '#C2451E';
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="38" viewBox="0 0 30 38">'
     + '<path d="M15 1C7.8 1 2 6.6 2 13.6 2 23 15 37 15 37s13-14 13-23.4C28 6.6 22.2 1 15 1z" fill="' + color + '" stroke="#FAF7F0" stroke-width="2"/>'
@@ -5015,6 +5026,11 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
             <div className="serif" style={{ fontSize: 22, fontWeight: 560, color: 'var(--ink)', marginTop: 6, lineHeight: 1.15 }}>How places get here</div>
             <p className="sans" style={{ fontSize: 13.5, color: 'var(--ink-2)', lineHeight: 1.6, marginTop: 8 }}>
               A place appears on the map only when you add it through the <strong>Google search</strong> box in <strong>Log</strong> — that is what saves its location. Typing an address by hand will not place a pin. This works in your own journal and inside a Shared List.
+            </p>
+            <window.Rule style={{ marginTop: 16 }} />
+            <div className="serif" style={{ fontSize: 18, fontWeight: 560, color: 'var(--ink)', marginTop: 16 }}>Reading the pins</div>
+            <p className="sans" style={{ fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.6, marginTop: 6 }}>
+              Once a place is reviewed, its pin shows the score — the group average on a Shared List, or your own in the journal. <strong style={{ color: '#3E6B4F' }}>Green</strong> means go again, <strong style={{ color: '#C2451E' }}>red</strong> means pass, grey means rated with no verdict yet. Places you haven't reviewed stay as a small cuisine-coloured dot.
             </p>
             <window.Rule style={{ marginTop: 16 }} />
             <div className="serif" style={{ fontSize: 18, fontWeight: 560, color: 'var(--ink)', marginTop: 16 }}>The filters &amp; search</div>
