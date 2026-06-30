@@ -3217,6 +3217,7 @@ const social = {
         name: sp.name, cuisine: sp.cuisine || 'Italian', hood: sp.hood || '', price: sp.price || 2,
         lat: Number(sp.lat), lng: Number(sp.lng), photos: sp.photos || [],
         hours: sp.hours || null,
+        status: n ? 'reviewed' : (sp.status || 'want'),
         overall, again: n ? (yes > no ? true : (no > yes ? false : null)) : null,
         fav: favIds.has(sp.id),
       };
@@ -4770,6 +4771,7 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
   const [price, setPrice] = React.useState('all');
   const [again, setAgain] = React.useState('all');
   const [favOnly, setFavOnly] = React.useState(false);
+  const [statuses, setStatuses] = React.useState({ want: true, visited: true, reviewed: true });
   const [q, setQ] = React.useState('');
   const [state, setState] = React.useState('loading');
   const [errMsg, setErrMsg] = React.useState(null);
@@ -4802,6 +4804,7 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
         if (!(e.kind === 'shared' && e.tableId === id)) return false;
       }
     }
+    if (!statuses[e.status || 'want']) return false;
     if (cuisine !== 'all' && e.cuisine !== cuisine) return false;
     if (price !== 'all' && e.price !== Number(price)) return false;
     if (again === 'yes' && e.again !== true) return false;
@@ -4822,7 +4825,7 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
     return [...m.values()];
   }, [filtered.map(e => e.kind + e.id).join('|')]);
 
-  React.useEffect(() => { setSelected(null); }, [filterVal, cuisine, price, again, favOnly, q]);
+  React.useEffect(() => { setSelected(null); }, [filterVal, cuisine, price, again, favOnly, q, statuses]);
 
   React.useEffect(() => {
     if (!all.length) { setState('empty'); return; }
@@ -4966,6 +4969,24 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
         <span className="kl" style={{ color: 'var(--ink-3)', flexShrink: 0, paddingLeft: 4 }}>{groups.length}</span>
       </div>
 
+      <div style={{ display: 'flex', gap: 6, padding: '0 16px 10px', overflowX: 'auto', flexShrink: 0, alignItems: 'center' }}>
+        <span className="kl" style={{ color: 'var(--ink-3)', flexShrink: 0, fontSize: 9, paddingRight: 2 }}>Show</span>
+        {[['want', 'Want'], ['visited', 'Visited'], ['reviewed', 'Reviewed']].map(([k, l]) => {
+          const on = statuses[k];
+          return (
+            <button key={k} type="button" onClick={() => setStatuses(s => ({ ...s, [k]: !s[k] }))} aria-pressed={on} title={(on ? 'Hide ' : 'Show ') + l} className="kl" style={{
+              flexShrink: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5,
+              border: '1px solid ' + (on ? 'var(--ink)' : 'var(--line)'), borderRadius: 999,
+              background: on ? 'var(--ink)' : 'var(--card)',
+              color: on ? 'var(--paper)' : 'var(--ink-3)', padding: '7px 12px', fontSize: 9,
+              opacity: on ? 1 : 0.55,
+            }}>
+              <window.StatusDot status={k} size={8} /> {l}
+            </button>
+          );
+        })}
+      </div>
+
       <div style={{ flex: 1, minHeight: 0, position: 'relative', borderTop: '1px solid var(--line)' }}>
         <div ref={mapEl} style={{ position: 'absolute', inset: 0 }} />
         {state === 'loading' && (<div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--paper-2)' }}><span className="serif" style={{ fontSize: 15, fontStyle: 'italic', color: 'var(--ink-3)' }}>Unfolding the map…</span></div>)}
@@ -5036,6 +5057,9 @@ function MapTab({ user, places, lists, tables, onOpenPlace, onOpenTable }) {
             <div className="serif" style={{ fontSize: 18, fontWeight: 560, color: 'var(--ink)', marginTop: 16 }}>The filters &amp; search</div>
             <p className="sans" style={{ fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.6, marginTop: 6 }}>
               The first dropdown narrows to one of your <strong>Lists</strong> (◾) or <strong>Shared Lists</strong> (◆). The others filter by cuisine, price, and whether you would go again. The search box finds a pin by name, and the number shows how many pins are visible.
+            </p>
+            <p className="sans" style={{ fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.6, marginTop: 6 }}>
+              The <strong>Show</strong> row beneath toggles each stage — <strong>Want</strong>, <strong>Visited</strong>, <strong>Reviewed</strong> — on or off independently, so you can show any one or two of them at once.
             </p>
             <div className="serif" style={{ fontSize: 18, fontWeight: 560, color: 'var(--ink)', marginTop: 16 }}>Tapping a pin</div>
             <p className="sans" style={{ fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.6, marginTop: 6 }}>
