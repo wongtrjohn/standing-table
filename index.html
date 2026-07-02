@@ -4427,7 +4427,7 @@ function JournalSpace({ user, col, switcher, onSettings, onChrome, org, listFilt
 }
 
 // ── a shared list: group list + verdicts ─────────────────────────────────
-function TableSpace({ user, tableId, switcher, onSettings, onChrome, col, org, openPlaceId, onConsumedPlace }) {
+function TableSpace({ user, tableId, switcher, onSettings, onChrome, col, org, openPlaceId, onConsumedPlace, onNavigate }) {
   const tbl = window.useSharedTable(tableId, user);
   const [view, setView] = React.useState(() => openPlaceId
     ? { screen: 'detail', placeId: openPlaceId, prefill: null }
@@ -4438,6 +4438,19 @@ function TableSpace({ user, tableId, switcher, onSettings, onChrome, col, org, o
   React.useEffect(() => {
     if (openPlaceId) { setView({ screen: 'detail', placeId: openPlaceId, prefill: null }); onConsumedPlace && onConsumedPlace(); }
   }, [openPlaceId]);
+
+  // report where we are (table + open place, if any) for "Continue where you left off"
+  React.useEffect(() => {
+    if (!onNavigate) return;
+    const data = tbl.data;
+    const tName = (data && data.table) ? data.table.name : 'List';
+    let label = '“' + tName + '”', placeId = null;
+    if (view.screen === 'detail' && view.placeId && data) {
+      const pl = (data.places || []).find(p => p.id === view.placeId);
+      if (pl) { placeId = pl.id; label = '“' + pl.name + '” · ' + tName; }
+    }
+    onNavigate({ tab: 'tables', kind: 'table', id: tableId, placeId, label });
+  }, [view.screen, view.placeId, tbl.data]);
 
   // Copy a shared-table place into my private journal. Uses MY verdict (not the
   // table average) when I've reviewed it; otherwise it lands as "want to try".
@@ -4690,14 +4703,11 @@ function TablesTab({ user, col, tables, lists, org, refreshTables, onChrome, onO
     }
   }, [openTableId]);
   React.useEffect(() => { if (openListId) { setListId(openListId); onConsumedList && onConsumedList(); } }, [openListId]);
-  // report the current location up so "Continue where you left off" can return
+  // report the current location up so "Continue where you left off" can return.
+  // When a shared table is open, TableSpace reports it (incl. the open place).
   React.useEffect(() => {
-    if (!onNavigate) return;
-    if (space) {
-      const t = (tables || []).find(x => x.id === space);
-      const name = t ? t.name : 'List';
-      onNavigate({ tab: 'tables', kind: 'table', id: space, label: '“' + name + '”' });
-    } else if (listId) {
+    if (!onNavigate || space) return;
+    if (listId) {
       const l = (lists || []).find(x => x.id === listId);
       const name = l ? l.name : 'List';
       onNavigate({ tab: 'tables', kind: 'list', id: listId, label: '“' + name + '”' });
@@ -4740,7 +4750,7 @@ function TablesTab({ user, col, tables, lists, org, refreshTables, onChrome, onO
   if (space) {
     return (
       <TableSpace key={space} user={user} tableId={space} col={col} org={org} onChrome={onChrome} onSettings={onOpenAccount}
-        openPlaceId={spacePlace} onConsumedPlace={() => setSpacePlace(null)}
+        openPlaceId={spacePlace} onConsumedPlace={() => setSpacePlace(null)} onNavigate={onNavigate}
         switcher={
           <div style={{ padding: '0 20px 10px', flexShrink: 0 }}>
             <button onClick={() => { setSpace(null); onChrome && onChrome(true); }} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-2)', padding: '2px 0' }}>‹ All lists</button>
@@ -5564,7 +5574,7 @@ function SignedApp({ user }) {
     if (r.tab === 'map') selectTab('map');
     else if (r.tab === 'account') selectTab('account');
     else if (r.tab === 'tables') {
-      if (r.kind === 'table') openTable(r.id);
+      if (r.kind === 'table') openTable(r.id, r.placeId || null);
       else if (r.kind === 'list') openList(r.id);
       else selectTab('tables');
     }
