@@ -4330,7 +4330,7 @@ function ErrorBanner({ message }) {
   );
 }
 
-function JournalSpace({ user, col, switcher, onSettings, onChrome, org, listFilter, title, onExit, openId, onConsumed, openLog, onConsumedLog, onTour }) {
+function JournalSpace({ user, col, switcher, onSettings, onChrome, org, listFilter, title, onExit, openId, onConsumed, openLog, onConsumedLog, onTour, resume, onResume, onDismissResume }) {
   const [view, setView] = React.useState({ screen: 'pipeline', placeId: null, forceStatus: null });
   const go = (screen, extra) => setView({ screen, placeId: null, forceStatus: null, ...(extra || {}) });
   React.useEffect(() => { onChrome && onChrome(view.screen === 'pipeline' || view.screen === 'detail'); }, [view.screen]);
@@ -4389,11 +4389,27 @@ function JournalSpace({ user, col, switcher, onSettings, onChrome, org, listFilt
         onDelete={() => { col.deletePlace(place.id); go('pipeline'); }} />
     );
   }
+  const resumeBar = (!listFilter && resume && resume.label) ? (
+    <div style={{ padding: '0 20px 12px', flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--spot-soft)', border: '1px solid rgba(194,69,30,0.28)', borderRadius: 12, padding: '9px 11px 9px 13px' }}>
+        <button onClick={() => onResume && onResume(resume)} className="sans" style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+          <div className="kl" style={{ color: 'var(--spot-2)', fontSize: 8.5 }}>Continue where you left off</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 2 }}>
+            <span style={{ color: 'var(--spot)', fontSize: 13 }}>↩</span>
+            <span className="serif" style={{ fontSize: 16, fontWeight: 560, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{resume.label}</span>
+          </div>
+        </button>
+        {onDismissResume && (
+          <button onClick={onDismissResume} aria-label="Dismiss" style={{ flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', fontSize: 17, lineHeight: 1, padding: '2px 4px' }}>×</button>
+        )}
+      </div>
+    </div>
+  ) : null;
   const head = listFilter ? (
     <div style={{ padding: '0 20px 10px', flexShrink: 0 }}>
       <button onClick={onExit} className="kl" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-2)', padding: '2px 0' }}>‹ My Lists</button>
     </div>
-  ) : switcher;
+  ) : (resumeBar || switcher);
   return (
     <window.AppPipeline
       places={visible}
@@ -4660,7 +4676,7 @@ function TablesHome({ uid, lists, tables, freshIds, onOpen, onManage, onOpenList
   );
 }
 
-function TablesTab({ user, col, tables, lists, org, refreshTables, onChrome, onOpenAccount, openTableId, onConsumedTable, openTablePlaceId, onConsumedTablePlace, freshIds, onSeen }) {
+function TablesTab({ user, col, tables, lists, org, refreshTables, onChrome, onOpenAccount, openTableId, onConsumedTable, openTablePlaceId, onConsumedTablePlace, openListId, onConsumedList, onNavigate, freshIds, onSeen }) {
   const [space, setSpace] = React.useState(null);
   const [spacePlace, setSpacePlace] = React.useState(null); // deep-link to a place inside the table
   const [listId, setListId] = React.useState(null);
@@ -4673,6 +4689,22 @@ function TablesTab({ user, col, tables, lists, org, refreshTables, onChrome, onO
       onConsumedTablePlace && onConsumedTablePlace();
     }
   }, [openTableId]);
+  React.useEffect(() => { if (openListId) { setListId(openListId); onConsumedList && onConsumedList(); } }, [openListId]);
+  // report the current location up so "Continue where you left off" can return
+  React.useEffect(() => {
+    if (!onNavigate) return;
+    if (space) {
+      const t = (tables || []).find(x => x.id === space);
+      const name = t ? t.name : 'List';
+      onNavigate({ tab: 'tables', kind: 'table', id: space, label: '“' + name + '”' });
+    } else if (listId) {
+      const l = (lists || []).find(x => x.id === listId);
+      const name = l ? l.name : 'List';
+      onNavigate({ tab: 'tables', kind: 'list', id: listId, label: '“' + name + '”' });
+    } else {
+      onNavigate({ tab: 'tables', kind: 'home', label: 'Lists' });
+    }
+  }, [space, listId, tables, lists]);
   // mark a table seen when opening it, and again when leaving it
   // (so your own additions while inside don't show up as "new" later)
   const prevSpace = React.useRef(null);
@@ -5444,7 +5476,10 @@ function SignedApp({ user }) {
   const [pendingPlace, setPendingPlace] = React.useState(null);
   const [pendingTable, setPendingTable] = React.useState(null);
   const [pendingTablePlace, setPendingTablePlace] = React.useState(null); // open this place inside the table
+  const [pendingList, setPendingList] = React.useState(null); // open this personal list
   const [pendingLog, setPendingLog] = React.useState(false);
+  const [resume, setResume] = React.useState(null);          // "continue where you left off" target
+  const locRef = React.useRef(null);                          // the current non-overview location
   const [tour, setTour] = React.useState(null);
   const [pill, setPill] = React.useState(false);
   const [seeding, setSeeding] = React.useState(false);
@@ -5510,8 +5545,33 @@ function SignedApp({ user }) {
   };
 
   const selectTab = (t) => { setChrome(true); setTab(t); };
+  // remember non-overview locations so "Continue where you left off" can return
+  React.useEffect(() => {
+    if (tab === 'map') locRef.current = { tab: 'map', label: 'the Map' };
+    else if (tab === 'account') locRef.current = { tab: 'account', label: 'Account' };
+    // 'tables' reports its own (which list) via onNavigate; 'overview' isn't tracked
+  }, [tab]);
+  // bottom-tab navigation: snapshot where we were when jumping to Overview
+  const goTab = (t) => {
+    if (t === 'overview' && tab !== 'overview' && locRef.current && locRef.current.tab !== 'overview') {
+      setResume(locRef.current);
+    }
+    selectTab(t);
+  };
+  const resumeTo = (r) => {
+    if (!r) return;
+    setResume(null);
+    if (r.tab === 'map') selectTab('map');
+    else if (r.tab === 'account') selectTab('account');
+    else if (r.tab === 'tables') {
+      if (r.kind === 'table') openTable(r.id);
+      else if (r.kind === 'list') openList(r.id);
+      else selectTab('tables');
+    }
+  };
   const openPlace = (id) => { setChrome(true); setPendingPlace(id); setTab('overview'); };
   const openTable = (id, placeId) => { setChrome(true); setPendingTable(id); setPendingTablePlace(placeId || null); setTab('tables'); };
+  const openList = (id) => { setChrome(true); setPendingList(id); setTab('tables'); };
   const startTour = () => { setChrome(true); setTab('overview'); setTour(0); };
   const endTour = () => { setTour(null); setPill(false); try { localStorage.setItem('st7-tour-seen', '1'); } catch (e) {} };
   // seed sample places first so the tour has something to point at
@@ -5554,9 +5614,9 @@ function SignedApp({ user }) {
 
   let body;
   if (tab === 'overview') {
-    body = <JournalSpace user={user} col={col} switcher={null} org={org} onChrome={setChrome} onSettings={() => selectTab('account')} openId={pendingPlace} onConsumed={() => setPendingPlace(null)} openLog={pendingLog} onConsumedLog={() => setPendingLog(false)} onTour={startTour} />;
+    body = <JournalSpace user={user} col={col} switcher={null} org={org} onChrome={setChrome} onSettings={() => selectTab('account')} openId={pendingPlace} onConsumed={() => setPendingPlace(null)} openLog={pendingLog} onConsumedLog={() => setPendingLog(false)} onTour={startTour} resume={resume} onResume={resumeTo} onDismissResume={() => setResume(null)} />;
   } else if (tab === 'tables') {
-    body = <TablesTab user={user} col={col} tables={tables} lists={lists} org={org} refreshTables={refreshTables} onChrome={setChrome} onOpenAccount={() => selectTab('account')} openTableId={pendingTable} onConsumedTable={() => setPendingTable(null)} openTablePlaceId={pendingTablePlace} onConsumedTablePlace={() => setPendingTablePlace(null)} freshIds={fresh} onSeen={seenTable} />;
+    body = <TablesTab user={user} col={col} tables={tables} lists={lists} org={org} refreshTables={refreshTables} onChrome={setChrome} onOpenAccount={() => selectTab('account')} openTableId={pendingTable} onConsumedTable={() => setPendingTable(null)} openTablePlaceId={pendingTablePlace} onConsumedTablePlace={() => setPendingTablePlace(null)} openListId={pendingList} onConsumedList={() => setPendingList(null)} onNavigate={(loc) => { locRef.current = loc; }} freshIds={fresh} onSeen={seenTable} />;
   } else if (tab === 'map') {
     body = <MapTab user={user} places={col.places} lists={lists} tables={tables} onOpenPlace={openPlace} onOpenTable={openTable} />;
   } else {
@@ -5577,7 +5637,7 @@ function SignedApp({ user }) {
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>{body}</div>
         {tab === 'overview' && <UndoBar info={col.undo} onUndo={col.undoDelete} />}
       </div>
-      {chrome && <BottomTabs active={tab} onPick={selectTab} alert={fresh.length > 0 ? 'tables' : null} />}
+      {chrome && <BottomTabs active={tab} onPick={goTab} alert={fresh.length > 0 ? 'tables' : null} />}
       {tourStep && (
         <TourOverlay
           step={tourStep} index={tour} count={TOUR_STEPS.length}
